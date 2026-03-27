@@ -166,6 +166,18 @@ CREATE TABLE IF NOT EXISTS idea_merges (
 CREATE INDEX IF NOT EXISTS idx_idea_merges_target
   ON idea_merges(target_idea_id);
 
+-- Embeddings for semantic similarity detection.
+CREATE TABLE IF NOT EXISTS idea_embeddings (
+  idea_id         INTEGER PRIMARY KEY,
+  embedding       BLOB NOT NULL,
+  model_version   TEXT NOT NULL,
+  created_at      INTEGER NOT NULL,
+  FOREIGN KEY (idea_id) REFERENCES ideas(idea_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_idea_embeddings_idea_id
+  ON idea_embeddings(idea_id);
+
 -- Schema version tracking for incremental migrations.
 CREATE TABLE IF NOT EXISTS schema_version (
   version         INTEGER PRIMARY KEY,

@@ -12,6 +12,7 @@ class Stage(str, Enum):
     RESEARCHER = "researcher"
     SCRAPER = "scraper"
     EVALUATOR = "evaluator"
+    TAGGER = "tagger"
     LEARNER = "learner"
     FINALIZE = "finalize"
 
@@ -173,6 +174,26 @@ class EvaluatorOutput:
         return {
             "ideas": [idea.to_dict() for idea in self.ideas],
             "iteration_summary": self.iteration_summary,
+        }
+
+
+@dataclass
+class TaggerInput:
+    """Input for Tagger agent."""
+    ideas: list[dict[str, Any]]
+    categories: list[str]
+
+
+@dataclass
+class TaggerOutput:
+    """Output from Tagger agent."""
+    tagged_ideas: list[dict[str, Any]]
+    tag_counts: dict[str, int]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "tagged_ideas": self.tagged_ideas,
+            "tag_counts": self.tag_counts,
         }
 
 

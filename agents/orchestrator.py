@@ -13,6 +13,7 @@ from .config import (
     ResearcherInput,
     ScraperInput,
     EvaluatorInput,
+    TaggerInput,
     LearnerInput,
     DEFAULT_MAX_ITERATIONS,
     DEFAULT_PLATEAU_WINDOW,
@@ -38,6 +39,7 @@ from .planner import PlannerAgent
 from .researcher import ResearcherAgent
 from .scraper import ScraperAgent
 from .evaluator import EvaluatorAgent
+from .tagger import TaggerAgent
 from .learner import LearnerAgent
 
 
@@ -69,6 +71,7 @@ class Orchestrator:
             Stage.RESEARCHER: ResearcherAgent(db_path=db_path),
             Stage.SCRAPER: ScraperAgent(db_path=db_path),
             Stage.EVALUATOR: EvaluatorAgent(db_path=db_path),
+            Stage.TAGGER: TaggerAgent(),
             Stage.LEARNER: LearnerAgent(db_path=db_path),
         }
         self._stop_sentinel = ".idea-harvester-off"
@@ -459,6 +462,24 @@ class Orchestrator:
                     result_dict,
                 )
                 print(f"  Evaluated {len(result.ideas)} ideas")
+                return result_dict
+
+            elif stage_enum == Stage.TAGGER:
+                ideas = payload.get("ideas", [])
+                tagger_input = TaggerInput(
+                    ideas=ideas,
+                    categories=["industry", "technology", "business_model", "founder_fit"],
+                )
+                result = asyncio.run(agent.execute(tagger_input))
+                result_dict = result.to_dict()
+
+                set_knowledge(
+                    self.db_path,
+                    self.config.run_task_id,
+                    f"tagger_output_{iteration_number}",
+                    result_dict,
+                )
+                print(f"  Tagged {len(result.tagged_ideas)} ideas, {len(result.tag_counts)} unique tags")
                 return result_dict
 
             elif stage_enum == Stage.LEARNER:

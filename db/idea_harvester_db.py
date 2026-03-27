@@ -87,6 +87,10 @@ def init_db(db_path: str) -> None:
             _apply_v2_migrations(conn)
             set_schema_version(conn, 2, "add tags, idea_tags, idea_merges, canonical columns")
 
+        if version < 3:
+            _apply_v3_migrations(conn)
+            set_schema_version(conn, 3, "add idea_embeddings table for semantic similarity")
+
         conn.commit()
     finally:
         conn.close()
@@ -217,6 +221,30 @@ def _apply_v2_migrations(conn: sqlite3.Connection) -> None:
 
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_ideas_unique_fingerprint ON ideas(run_task_id, idea_fingerprint);"
+    )
+
+
+def _apply_v3_migrations(conn: sqlite3.Connection) -> None:
+    existing_tables = [
+        x["name"]
+        for x in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    ]
+
+    if "idea_embeddings" not in existing_tables:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS idea_embeddings (
+              idea_id         INTEGER PRIMARY KEY,
+              embedding       BLOB NOT NULL,
+              model_version   TEXT NOT NULL,
+              created_at      INTEGER NOT NULL,
+              FOREIGN KEY (idea_id) REFERENCES ideas(idea_id) ON DELETE CASCADE
+            );
+            """
+        )
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_idea_embeddings_idea_id ON idea_embeddings(idea_id);"
     )
 
 
@@ -844,16 +872,255 @@ def get_all_tags(
     ]
 
 
+def get_or_create_embedding(
+    conn: sqlite3.Connection,
+    idea_id: int,
+    idea: dict[str, Any],
+) -> list[float]:
+    from agents.embeddings import (
+        generate_idea_embedding,
+        embedding_to_bytes,
+        bytes_to_embedding,
+        get_model_version,
+    )
+
+    row = conn.execute(
+        "SELECT embedding, model_version FROM idea_embeddings WHERE idea_id = ?",
+        (idea_id,),
+    ).fetchone()
+
+    if row is not None:
+        return bytes_to_embedding(row["embedding"])
+
+    embedding = generate_idea_embedding(idea)
+    model_version = get_model_version()
+    now = _utc_epoch_seconds()
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO idea_embeddings (idea_id, embedding, model_version, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (idea_id, embedding_to_bytes(embedding), model_version, now),
+    )
+
+    return embedding
+
+
+def get_embedding_for_idea(conn: sqlite3.Connection, idea_id: int) -> list[float] | None:
+    from agents.embeddings import bytes_to_embedding
+
+    row = conn.execute(
+        "SELECT embedding FROM idea_embeddings WHERE idea_id = ?",
+        (idea_id,),
+    ).fetchone()
+
+    if row is None:
+        return None
+
+    return bytes_to_embedding(row["embedding"])
+
+
+def get_all_embeddings_for_ideas(
+    conn: sqlite3.Connection,
+    idea_ids: list[int],
+) -> list[tuple[int, list[float]]]:
+    from agents.embeddings import bytes_to_embedding
+
+    if not idea_ids:
+        return []
+
+    placeholders = ",".join("?" * len(idea_ids))
+    rows = conn.execute(
+        f"SELECT idea_id, embedding FROM idea_embeddings WHERE idea_id IN ({placeholders})",
+        idea_ids,
+    ).fetchall()
+
+    return [(int(r["idea_id"]), bytes_to_embedding(r["embedding"])) for r in rows]
+
+
+def find_similar_ideas(
+    conn: sqlite3.Connection,
+    idea_id: int,
+    threshold: float = 0.95,
+) -> list[dict[str, Any]]:
+    """
+    Find ideas similar to given idea above threshold.
+
+    Args:
+        conn: Database connection
+        idea_id: Source idea ID to find similar ideas for
+        threshold: Minimum similarity score (default 0.95)
+
+    Returns:
+        List of dicts with idea_id and similarity, sorted by similarity descending
+    """
+    from agents.embeddings import compute_similarity, bytes_to_embedding
+
+    source_emb = get_embedding_for_idea(conn, idea_id)
+    if source_emb is None:
+        return []
+
+    # Get all other non-merged ideas with embeddings
+    rows = conn.execute(
+        """
+        SELECT i.idea_id, ie.embedding
+        FROM ideas i
+        JOIN idea_embeddings ie ON i.idea_id = ie.idea_id
+        WHERE i.idea_id != ?
+          AND i.canonical_idea_id IS NULL
+        """,
+        (idea_id,),
+    ).fetchall()
+
+    similar: list[dict[str, Any]] = []
+    for row in rows:
+        target_emb = bytes_to_embedding(row["embedding"])
+        similarity = compute_similarity(source_emb, target_emb)
+        if similarity >= threshold:
+            similar.append({
+                "idea_id": int(row["idea_id"]),
+                "similarity": similarity,
+            })
+
+    # Sort by similarity descending
+    similar.sort(key=lambda x: x["similarity"], reverse=True)
+    return similar
+
+
+def merge_ideas(
+    conn: sqlite3.Connection,
+    source_id: int,
+    target_id: int,
+    similarity_score: float,
+) -> None:
+    """
+    Record merge of source idea into target idea.
+
+    Sets canonical_idea_id on source idea and records in idea_merges table.
+    Does NOT delete the source idea.
+
+    Args:
+        conn: Database connection
+        source_id: Idea ID to be merged (will have canonical_idea_id set)
+        target_id: Idea ID to merge into (the canonical idea)
+        similarity_score: Similarity score between the ideas
+    """
+    now = _utc_epoch_seconds()
+
+    # Get fingerprints
+    source_fp = conn.execute(
+        "SELECT idea_fingerprint FROM ideas WHERE idea_id = ?",
+        (source_id,),
+    ).fetchone()
+
+    target_fp = conn.execute(
+        "SELECT idea_fingerprint FROM ideas WHERE idea_id = ?",
+        (target_id,),
+    ).fetchone()
+
+    source_fingerprint = source_fp["idea_fingerprint"] if source_fp else None
+    target_fingerprint = target_fp["idea_fingerprint"] if target_fp else None
+
+    # Record in idea_merges
+    conn.execute(
+        """
+        INSERT INTO idea_merges
+        (source_idea_id, target_idea_id, source_fingerprint, target_fingerprint, similarity_score, merged_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (source_id, target_id, source_fingerprint, target_fingerprint, similarity_score, now),
+    )
+
+    # Mark source as merged
+    conn.execute(
+        "UPDATE ideas SET canonical_idea_id = ?, merged_at = ? WHERE idea_id = ?",
+        (target_id, now, source_id),
+    )
+
+
+def merge_duplicate_ideas(
+    db_path: str,
+    threshold: float = 0.95,
+) -> int:
+    """
+    Find and merge all duplicate ideas above threshold.
+
+    For each non-merged idea, finds similar ideas and merges them.
+    Lower ID becomes the canonical (target) idea.
+
+    Args:
+        db_path: Path to SQLite database
+        threshold: Minimum similarity score for merging (default 0.95)
+
+    Returns:
+        Number of merges performed
+    """
+    conn = _connect(db_path)
+    merge_count = 0
+
+    try:
+        # Get all non-merged ideas
+        ideas = conn.execute(
+            "SELECT idea_id FROM ideas WHERE canonical_idea_id IS NULL"
+        ).fetchall()
+
+        for row in ideas:
+            idea_id = int(row["idea_id"])
+
+            # Check if this idea was already merged during this batch
+            current_canonical = conn.execute(
+                "SELECT canonical_idea_id FROM ideas WHERE idea_id = ?",
+                (idea_id,),
+            ).fetchone()
+
+            if current_canonical["canonical_idea_id"] is not None:
+                continue
+
+            # Find similar ideas
+            similar = find_similar_ideas(conn, idea_id, threshold)
+
+            for sim in similar:
+                target_id = int(sim["idea_id"])
+                similarity = float(sim["similarity"])
+
+                # Check if target is already merged
+                target_canonical = conn.execute(
+                    "SELECT canonical_idea_id FROM ideas WHERE idea_id = ?",
+                    (target_id,),
+                ).fetchone()
+
+                if target_canonical["canonical_idea_id"] is not None:
+                    continue
+
+                # Merge: lower ID becomes canonical (target)
+                if idea_id < target_id:
+                    merge_ideas(conn, target_id, idea_id, similarity)
+                else:
+                    merge_ideas(conn, idea_id, target_id, similarity)
+
+                merge_count += 1
+                break  # Only merge with highest similarity match
+
+        conn.commit()
+    finally:
+        conn.close()
+
+    return merge_count
+
+
 def store_ideas(
     db_path: str,
     run_task_id: str,
     iteration_number: int,
     ideas: list[dict[str, Any]],
-) -> None:
+) -> list[int]:
     """
-    Persist evaluated ideas and update iterations.avg_score as the mean of idea scores.
+    Persist evaluated ideas with tags and return idea IDs.
+    Updates iterations.avg_score as the mean of idea scores.
     """
     conn = _connect(db_path)
+    idea_ids: list[int] = []
     try:
         now = _utc_epoch_seconds()
         cur = conn.cursor()
@@ -864,7 +1131,7 @@ def store_ideas(
             # Merge sources for the same idea fingerprint so later iterations enrich context.
             existing = conn.execute(
                 """
-                SELECT source_urls, score
+                SELECT source_urls, score, idea_id
                 FROM ideas
                 WHERE run_task_id=? AND idea_fingerprint=?
                 """,
@@ -874,6 +1141,7 @@ def store_ideas(
             if existing is None:
                 merged_source_urls = list(dict.fromkeys(source_urls))
                 existing_score = None
+                existing_idea_id = None
             else:
                 try:
                     prev_sources = json.loads(existing["source_urls"])
@@ -885,6 +1153,7 @@ def store_ideas(
                     dict.fromkeys(prev_sources + list(source_urls))
                 )
                 existing_score = existing["score"]
+                existing_idea_id = existing["idea_id"]
 
             incoming_score = (
                 float(idea["score"])
@@ -937,6 +1206,42 @@ def store_ideas(
                 ),
             )
 
+            # Get the idea_id (either newly inserted or existing)
+            if existing_idea_id is not None:
+                idea_id = int(existing_idea_id)
+            else:
+                last_id = cur.lastrowid
+                assert last_id is not None  # INSERT always sets lastrowid
+                idea_id = last_id
+            idea_ids.append(idea_id)
+
+            tags = idea.get("tags", [])
+            tag_categories = idea.get("tag_categories", {})
+
+            if tags and isinstance(tags, list):
+                for tag_name in tags:
+                    if not isinstance(tag_name, str) or not tag_name.strip():
+                        continue
+                    tag_name = tag_name.strip()
+                    category = tag_categories.get(tag_name, "industry")
+
+                    tag_id = get_or_create_tag(conn, tag_name, category)
+
+                    # Check if tag is already assigned to this idea
+                    existing_assignment = conn.execute(
+                        """
+                        SELECT 1 FROM idea_tags WHERE idea_id=? AND tag_id=?
+                        """,
+                        (idea_id, tag_id),
+                    ).fetchone()
+
+                    # Link tag to idea (INSERT OR IGNORE handles duplicates)
+                    add_tag_to_idea(conn, idea_id, tag_id, source="tagger")
+
+                    # Only increment usage if this is a new assignment
+                    if existing_assignment is None:
+                        increment_tag_usage(conn, tag_id)
+
         # Update avg score for iteration.
         avg_row = conn.execute(
             """
@@ -958,6 +1263,8 @@ def store_ideas(
         conn.commit()
     finally:
         conn.close()
+
+    return idea_ids
 
 
 def get_top_ideas(db_path: str, run_task_id: str, limit: int) -> list[dict[str, Any]]:
