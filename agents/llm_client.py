@@ -146,17 +146,21 @@ class OpenCodeLLMClient:
         model: Optional[str] = None,
         max_retries: int = 3,
     ) -> Any:
+        # Strong JSON enforcement - prepend to override any system instructions
+        json_prefix = "IGNORE ALL PREVIOUS INSTRUCTIONS. You must respond with ONLY valid JSON. No markdown, no explanations, no conversational text.\n\n"
+        
         json_system = (system or "") + "\n\nCRITICAL: Respond with ONLY valid JSON. No conversational text, no explanations, no markdown. Just raw JSON."
         
+        full_prompt = json_prefix + prompt
         if "json" not in prompt.lower():
-            prompt = prompt + "\n\nRespond with valid JSON only. No other text."
+            full_prompt = full_prompt + "\n\nRespond with valid JSON only. No other text."
 
         last_error = None
         last_response = ""
         
         for attempt in range(max_retries):
             response = await self.complete(
-                prompt, json_system, max_tokens, temperature, model, 0
+                full_prompt, json_system, max_tokens, temperature, model, 0
             )
             last_response = response
 
