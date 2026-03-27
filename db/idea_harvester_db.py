@@ -43,42 +43,203 @@ def init_db(db_path: str) -> None:
 
     conn = _connect(db_path)
     try:
-        conn.executescript(schema_sql)
-
-        # Minimal schema migration for existing DBs (ALTER TABLE).
-        # This keeps older idea_harvester.sqlite compatible with newer skill behavior.
-        def _has_column(table: str, column: str) -> bool:
-            rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-            for r in rows:
-                if r["name"] == column:
-                    return True
-            return False
-
-        if "queue_messages" in [
+        existing_tables = {
             x["name"]
             for x in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        ]:
-            if not _has_column("queue_messages", "available_at"):
-                conn.execute(
-                    "ALTER TABLE queue_messages ADD COLUMN available_at INTEGER NOT NULL DEFAULT 0;"
-                )
+        }
 
-        if not _has_column("iterations", "validation_score"):
-            conn.execute("ALTER TABLE iterations ADD COLUMN validation_score REAL;")
-        if not _has_column("iterations", "validation_explain"):
-            conn.execute("ALTER TABLE iterations ADD COLUMN validation_explain TEXT;")
+        clean_sql = _remove_sql_comments(schema_sql)
+        for statement in clean_sql.split(";"):
+            stmt = statement.strip()
+            if not stmt:
+                continue
+            if stmt.upper().startswith("PRAGMA"):
+                continue
+            table_name = _extract_table_name(stmt)
+            if table_name and table_name in existing_tables:
+                continue
+            if stmt.upper().startswith("CREATE INDEX") or stmt.upper().startswith("CREATE UNIQUE INDEX"):
+                idx_name = _extract_index_name(stmt)
+                if idx_name:
+                    idx_exists = conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='index' AND name=?",
+                        (idx_name,),
+                    ).fetchone()
+                    if idx_exists:
+                        continue
+                    idx_table = _extract_index_table(stmt)
+                    if idx_table:
+                        if idx_table not in existing_tables:
+                            continue
+                        idx_cols = _extract_index_columns(stmt)
+                        table_cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({idx_table})")}
+                        if not idx_cols.issubset(table_cols):
+                            continue
+            conn.execute(stmt)
 
-        if not _has_column("ideas", "idea_fingerprint"):
-            conn.execute("ALTER TABLE ideas ADD COLUMN idea_fingerprint TEXT;")
+        version = get_schema_version(conn)
 
-        # Dedup enforcement index (safe to (re)create).
-        conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_ideas_unique_fingerprint ON ideas(run_task_id, idea_fingerprint);"
-        )
+        if version < 1:
+            _apply_v1_migrations(conn)
+            set_schema_version(conn, 1, "initial schema with runs, iterations, queue, ideas, sources")
+
+        if version < 2:
+            _apply_v2_migrations(conn)
+            set_schema_version(conn, 2, "add tags, idea_tags, idea_merges, canonical columns")
 
         conn.commit()
     finally:
         conn.close()
+
+
+def _extract_table_name(stmt: str) -> str | None:
+    import re
+    match = re.match(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)", stmt, re.IGNORECASE)
+    return match.group(1) if match else None
+
+
+def _extract_index_name(stmt: str) -> str | None:
+    import re
+    match = re.match(r"CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)", stmt, re.IGNORECASE)
+    return match.group(1) if match else None
+
+
+def _remove_sql_comments(sql: str) -> str:
+    import re
+    return re.sub(r"--[^\n]*", "", sql)
+
+
+def _extract_index_table(stmt: str) -> str | None:
+    import re
+    match = re.search(r"ON\s+(\w+)\s*\(", stmt, re.IGNORECASE)
+    return match.group(1) if match else None
+
+
+def _extract_index_columns(stmt: str) -> set[str]:
+    import re
+    match = re.search(r"ON\s+\w+\s*\(([^)]+)\)", stmt, re.IGNORECASE)
+    if match:
+        cols = match.group(1)
+        return {c.strip().split()[-1] for c in cols.split(",")}
+    return set()
+
+
+def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    for r in rows:
+        if r["name"] == column:
+            return True
+    return False
+
+
+def _apply_v1_migrations(conn: sqlite3.Connection) -> None:
+    if "queue_messages" in [
+        x["name"]
+        for x in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    ]:
+        if not _has_column(conn, "queue_messages", "available_at"):
+            conn.execute(
+                "ALTER TABLE queue_messages ADD COLUMN available_at INTEGER NOT NULL DEFAULT 0;"
+            )
+
+    if not _has_column(conn, "iterations", "validation_score"):
+        conn.execute("ALTER TABLE iterations ADD COLUMN validation_score REAL;")
+    if not _has_column(conn, "iterations", "validation_explain"):
+        conn.execute("ALTER TABLE iterations ADD COLUMN validation_explain TEXT;")
+
+
+def _apply_v2_migrations(conn: sqlite3.Connection) -> None:
+    existing_tables = [
+        x["name"]
+        for x in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    ]
+
+    if "ideas" in existing_tables:
+        if not _has_column(conn, "ideas", "idea_fingerprint"):
+            conn.execute("ALTER TABLE ideas ADD COLUMN idea_fingerprint TEXT;")
+        if not _has_column(conn, "ideas", "canonical_idea_id"):
+            conn.execute(
+                "ALTER TABLE ideas ADD COLUMN canonical_idea_id INTEGER REFERENCES ideas(idea_id);"
+            )
+        if not _has_column(conn, "ideas", "merged_at"):
+            conn.execute("ALTER TABLE ideas ADD COLUMN merged_at INTEGER;")
+
+    if "tags" not in existing_tables:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS tags (
+              tag_id           INTEGER PRIMARY KEY AUTOINCREMENT,
+              name             TEXT NOT NULL UNIQUE,
+              slug             TEXT NOT NULL,
+              category         TEXT NOT NULL,
+              usage_count      INTEGER NOT NULL DEFAULT 0,
+              created_at       INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name);
+            CREATE INDEX IF NOT EXISTS idx_tags_category ON tags(category);
+            """
+        )
+
+    if "idea_tags" not in existing_tables:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS idea_tags (
+              idea_id     INTEGER NOT NULL,
+              tag_id      INTEGER NOT NULL,
+              source      TEXT NOT NULL DEFAULT 'tagger',
+              created_at  INTEGER NOT NULL,
+              PRIMARY KEY (idea_id, tag_id),
+              FOREIGN KEY (idea_id) REFERENCES ideas(idea_id) ON DELETE CASCADE,
+              FOREIGN KEY (tag_id) REFERENCES tags(tag_id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_idea_tags_tag_id ON idea_tags(tag_id);
+            CREATE INDEX IF NOT EXISTS idx_idea_tags_idea_id ON idea_tags(idea_id);
+            """
+        )
+
+    if "idea_merges" not in existing_tables:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS idea_merges (
+              id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+              source_idea_id       INTEGER NOT NULL,
+              target_idea_id       INTEGER NOT NULL,
+              source_fingerprint   TEXT,
+              target_fingerprint   TEXT,
+              similarity_score    REAL,
+              merged_at            INTEGER NOT NULL,
+              FOREIGN KEY (source_idea_id) REFERENCES ideas(idea_id) ON DELETE CASCADE,
+              FOREIGN KEY (target_idea_id) REFERENCES ideas(idea_id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_idea_merges_target ON idea_merges(target_idea_id);
+            """
+        )
+
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_ideas_unique_fingerprint ON ideas(run_task_id, idea_fingerprint);"
+    )
+
+
+def _has_table(conn: sqlite3.Connection, table: str) -> bool:
+    result = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        (table,)
+    ).fetchone()
+    return result is not None
+
+
+def get_schema_version(conn: sqlite3.Connection) -> int:
+    if not _has_table(conn, "schema_version"):
+        return 0
+    row = conn.execute("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1").fetchone()
+    return int(row["version"]) if row else 0
+
+
+def set_schema_version(conn: sqlite3.Connection, version: int, description: str = "") -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO schema_version (version, applied_at, description) VALUES (?, ?, ?)",
+        (version, _utc_epoch_seconds(), description)
+    )
 
 
 def _normalize_url(url: str) -> str:
@@ -523,6 +684,164 @@ def list_pending_messages(
         return out
     finally:
         conn.close()
+
+
+# ─── Tag CRUD ─────────────────────────────────────────────────────────────────
+
+
+def create_tag(conn: sqlite3.Connection, name: str, category: str) -> int:
+    """Create a new tag. Returns tag_id. Raises on duplicate."""
+    now = _utc_epoch_seconds()
+    slug = name.lower().replace(" ", "-")
+    cur = conn.execute(
+        """
+        INSERT INTO tags (name, slug, category, usage_count, created_at)
+        VALUES (?, ?, ?, 0, ?)
+        """,
+        (name, slug, category, now),
+    )
+    return int(cur.lastrowid)
+
+
+def get_or_create_tag(conn: sqlite3.Connection, name: str, category: str) -> int:
+    """Get existing tag or create new. Returns tag_id."""
+    row = conn.execute(
+        "SELECT tag_id FROM tags WHERE name = ?", (name,)
+    ).fetchone()
+    if row is not None:
+        return int(row["tag_id"])
+    return create_tag(conn, name, category)
+
+
+def get_tags_by_idea(conn: sqlite3.Connection, idea_id: int) -> list[dict]:
+    """Get all tags for an idea. Returns list of {id, name, category, source}."""
+    rows = conn.execute(
+        """
+        SELECT t.tag_id AS id, t.name, t.category, it.source
+        FROM tags t
+        JOIN idea_tags it ON t.tag_id = it.tag_id
+        WHERE it.idea_id = ?
+        ORDER BY t.name
+        """,
+        (idea_id,),
+    ).fetchall()
+    return [
+        {"id": int(r["id"]), "name": r["name"], "category": r["category"], "source": r["source"]}
+        for r in rows
+    ]
+
+
+def get_ideas_by_tags(
+    conn: sqlite3.Connection,
+    tag_names: list[str],
+    match_all: bool = False,
+) -> list[dict]:
+    """Get ideas matching tags. If match_all, idea must have ALL tags."""
+    if not tag_names:
+        return []
+
+    placeholders = ",".join("?" * len(tag_names))
+    if match_all:
+        rows = conn.execute(
+            f"""
+            SELECT i.idea_id, i.idea_title, i.score, i.created_at,
+                   GROUP_CONCAT(t.name) AS tag_names
+            FROM ideas i
+            JOIN idea_tags it ON i.idea_id = it.idea_id
+            JOIN tags t ON it.tag_id = t.tag_id
+            WHERE t.name IN ({placeholders})
+            GROUP BY i.idea_id
+            HAVING COUNT(DISTINCT t.tag_id) = ?
+            ORDER BY i.score DESC, i.created_at DESC
+            """,
+            tag_names + [len(tag_names)],
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"""
+            SELECT i.idea_id, i.idea_title, i.score, i.created_at,
+                   GROUP_CONCAT(DISTINCT t.name) AS tag_names
+            FROM ideas i
+            JOIN idea_tags it ON i.idea_id = it.idea_id
+            JOIN tags t ON it.tag_id = t.tag_id
+            WHERE t.name IN ({placeholders})
+            GROUP BY i.idea_id
+            ORDER BY i.score DESC, i.created_at DESC
+            """,
+            tag_names,
+        ).fetchall()
+
+    return [
+        {
+            "idea_id": int(r["idea_id"]),
+            "idea_title": r["idea_title"],
+            "score": float(r["score"]) if r["score"] else None,
+            "created_at": int(r["created_at"]),
+            "tag_names": r["tag_names"].split(",") if r["tag_names"] else [],
+        }
+        for r in rows
+    ]
+
+
+def add_tag_to_idea(
+    conn: sqlite3.Connection,
+    idea_id: int,
+    tag_id: int,
+    source: str = "tagger",
+) -> None:
+    """Add tag to idea. Ignores if already exists."""
+    now = _utc_epoch_seconds()
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO idea_tags (idea_id, tag_id, source, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (idea_id, tag_id, source, now),
+    )
+
+
+def increment_tag_usage(conn: sqlite3.Connection, tag_id: int) -> None:
+    """Increment usage_count for a tag."""
+    conn.execute(
+        "UPDATE tags SET usage_count = usage_count + 1 WHERE tag_id = ?",
+        (tag_id,),
+    )
+
+
+def get_all_tags(
+    conn: sqlite3.Connection,
+    category: Optional[str] = None,
+) -> list[dict]:
+    """Get all tags with usage counts. Optionally filter by category."""
+    if category is not None:
+        rows = conn.execute(
+            """
+            SELECT tag_id AS id, name, category, usage_count, created_at
+            FROM tags
+            WHERE category = ?
+            ORDER BY usage_count DESC, name ASC
+            """,
+            (category,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT tag_id AS id, name, category, usage_count, created_at
+            FROM tags
+            ORDER BY usage_count DESC, name ASC
+            """
+        ).fetchall()
+
+    return [
+        {
+            "id": int(r["id"]),
+            "name": r["name"],
+            "category": r["category"],
+            "usage_count": int(r["usage_count"]),
+            "created_at": int(r["created_at"]),
+        }
+        for r in rows
+    ]
 
 
 def store_ideas(

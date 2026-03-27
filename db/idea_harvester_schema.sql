@@ -88,21 +88,18 @@ CREATE TABLE IF NOT EXISTS ideas (
   idea_title         TEXT NOT NULL,
   idea_summary       TEXT,
   idea_payload       TEXT NOT NULL, -- JSON string (full structured idea object)
-  idea_fingerprint   TEXT NOT NULL, -- sha256 fingerprint used for dedup
+  idea_fingerprint   TEXT, -- sha256 fingerprint used for dedup (nullable for old DBs)
   score               REAL NOT NULL,
   score_breakdown    TEXT, -- JSON string (novelty/feasibility/market etc)
   evaluator_explain  TEXT, -- freeform
   created_at          INTEGER NOT NULL,
-  UNIQUE (run_task_id, idea_fingerprint),
+  canonical_idea_id   INTEGER, -- self-reference for merged ideas
+  merged_at           INTEGER, -- timestamp when merged
   FOREIGN KEY (run_task_id) REFERENCES runs(task_id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_ideas_run_score
   ON ideas(run_task_id, score DESC, iteration_number);
-
--- If the DB pre-dates schema evolution, enforce dedup via an index as well.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_ideas_unique_fingerprint
-  ON ideas(run_task_id, idea_fingerprint);
 
 -- Deduplicated sources (URLs) per run.
 -- Used to avoid scraping the same URL repeatedly.
@@ -123,4 +120,56 @@ CREATE TABLE IF NOT EXISTS sources (
 
 CREATE INDEX IF NOT EXISTS idx_sources_run_status
   ON sources(run_task_id, status);
+
+-- Flat tags for categorizing ideas (industry, technology, business_model, founder_fit).
+CREATE TABLE IF NOT EXISTS tags (
+  tag_id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  name             TEXT NOT NULL UNIQUE,
+  slug             TEXT NOT NULL,
+  category         TEXT NOT NULL, -- industry|technology|business_model|founder_fit
+  usage_count      INTEGER NOT NULL DEFAULT 0,
+  created_at       INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tags_name
+  ON tags(name);
+
+CREATE INDEX IF NOT EXISTS idx_tags_category
+  ON tags(category);
+
+CREATE TABLE IF NOT EXISTS idea_tags (
+  idea_id     INTEGER NOT NULL,
+  tag_id      INTEGER NOT NULL,
+  source      TEXT NOT NULL DEFAULT 'tagger',
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (idea_id, tag_id),
+  FOREIGN KEY (idea_id) REFERENCES ideas(idea_id) ON DELETE CASCADE,
+  FOREIGN KEY (tag_id) REFERENCES tags(tag_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_idea_tags_tag_id
+  ON idea_tags(tag_id);
+
+-- Tracks idea merge operations (dedup audit trail).
+CREATE TABLE IF NOT EXISTS idea_merges (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_idea_id       INTEGER NOT NULL,
+  target_idea_id       INTEGER NOT NULL,
+  source_fingerprint   TEXT,
+  target_fingerprint   TEXT,
+  similarity_score    REAL,
+  merged_at            INTEGER NOT NULL,
+  FOREIGN KEY (source_idea_id) REFERENCES ideas(idea_id) ON DELETE CASCADE,
+  FOREIGN KEY (target_idea_id) REFERENCES ideas(idea_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_idea_merges_target
+  ON idea_merges(target_idea_id);
+
+-- Schema version tracking for incremental migrations.
+CREATE TABLE IF NOT EXISTS schema_version (
+  version         INTEGER PRIMARY KEY,
+  applied_at      INTEGER NOT NULL,
+  description     TEXT
+);
 
