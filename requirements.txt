@@ -1,0 +1,26 @@
+# Idea Harvester Requirements
+
+# Web framework for dashboard
+flask>=2.3.0
+
+# Web Search - DuckDuckGo (free, no API key needed)
+duckduckgo-search>=3.9.0
+
+# Web Scraping - Trafilatura for content extraction
+trafilatura>=1.6.0
+
+# HTTP requests
+requests>=2.31.0
+
+# HTML parsing fallback
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+
+# For data visualization in dashboard
+plotly>=5.18.0
+
+# Date/time handling
+python-dateutil>=2.8.0
+
+# For text processing
+html2text>=2020.1.16
