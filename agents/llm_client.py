@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import tempfile
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -25,11 +27,13 @@ class LLMError(Exception):
 class OpenCodeLLMClient:
     def __init__(
         self,
-        server_url: str = "http://localhost:4096",
+        server_url: Optional[str] = None,
         system_prompt: Optional[str] = None,
+        cwd: Optional[str] = None,
     ):
         self.server_url = server_url
         self.system_prompt = system_prompt
+        self.cwd = cwd
         self._client = None
         self._connected = False
         self._lock = asyncio.Lock()
@@ -41,9 +45,15 @@ class OpenCodeLLMClient:
         try:
             from opencode_agent_sdk import SDKClient, AgentOptions
 
+            # Use clean temp directory to avoid AGENTS.md injection
+            if self.cwd is None:
+                self.cwd = tempfile.mkdtemp(prefix="opencode_clean_")
+
+            # Empty server_url = subprocess mode, URL = HTTP mode
             self._client = SDKClient(options=AgentOptions(
-                server_url=self.server_url,
+                server_url=self.server_url or "",
                 system_prompt=self.system_prompt or "You are a helpful assistant",
+                cwd=self.cwd,
             ))
         except ImportError as e:
             raise LLMError(
@@ -220,7 +230,7 @@ _client_lock = asyncio.Lock()
 
 
 async def get_llm_client(
-    server_url: str = "http://localhost:4096",
+    server_url: Optional[str] = None,
     system_prompt: Optional[str] = None,
 ) -> OpenCodeLLMClient:
     global _llm_client

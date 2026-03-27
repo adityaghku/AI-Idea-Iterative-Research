@@ -5,7 +5,6 @@ import argparse
 import os
 import subprocess
 import sys
-import time
 
 from agents import Orchestrator, DEFAULT_MAX_ITERATIONS, DEFAULT_PLATEAU_WINDOW, DEFAULT_MIN_IMPROVEMENT, DEFAULT_DB_PATH, setup_logging
 
@@ -26,31 +25,6 @@ Avoid:
 - Solutions looking for problems (technology-first approaches)
 - Markets dominated by well-funded incumbents
 - Ideas requiring regulatory approval or compliance (healthcare, finance) without clear moats"""
-
-
-def start_opencode_server():
-    print("Starting OpenCode server...")
-    try:
-        proc = subprocess.Popen(
-            ["opencode", "serve"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        time.sleep(2)
-        if proc.poll() is not None:
-            stdout, stderr = proc.communicate()
-            print(f"Failed to start OpenCode server:")
-            print(f"  stdout: {stdout.decode()}")
-            print(f"  stderr: {stderr.decode()}")
-            return None
-        print("OpenCode server started")
-        return proc
-    except FileNotFoundError:
-        print("Error: 'opencode' command not found. Is OpenCode installed?")
-        return None
-    except Exception as e:
-        print(f"Error starting OpenCode server: {e}")
-        return None
 
 
 def run_llm_test():
@@ -121,51 +95,34 @@ def main():
         print("Stop sentinel detected (.idea-harvester-off). Remove it to resume.")
         sys.exit(0)
 
-    server_proc = start_opencode_server()
-    if server_proc is None:
-        print("\nFatal: Could not start OpenCode server")
+    if not run_llm_test():
+        print("\nFatal: LLM test failed")
         sys.exit(1)
 
+    print("\nLLM test passed. Starting Idea Harvester...")
+
+    orchestrator = Orchestrator(
+        db_path=args.db,
+        run_task_id=args.run_task_id,
+        goal=HARDCODED_GOAL,
+        max_iterations=args.max_iterations,
+        plateau_window=args.plateau_window,
+        min_improvement=args.min_improvement,
+        model=args.model,
+    )
+
     try:
-        if not run_llm_test():
-            print("\nFatal: LLM test failed")
-            server_proc.terminate()
-            server_proc.wait()
-            sys.exit(1)
-
-        print("\nLLM test passed. Starting Idea Harvester...")
-
-        orchestrator = Orchestrator(
-            db_path=args.db,
-            run_task_id=args.run_task_id,
-            goal=HARDCODED_GOAL,
-            max_iterations=args.max_iterations,
-            plateau_window=args.plateau_window,
-            min_improvement=args.min_improvement,
-            model=args.model,
-        )
-
-        try:
-            if args.resume:
-                orchestrator.resume()
-            else:
-                orchestrator.start()
-        except KeyboardInterrupt:
-            print("\nInterrupted by user. Run state saved to database.")
-            print("Resume with: python main.py --resume --run-task-id", orchestrator.config.run_task_id)
-            sys.exit(0)
-        except Exception as e:
-            print(f"\nError: {e}")
-            raise
-
-    finally:
-        print("\nShutting down OpenCode server...")
-        server_proc.terminate()
-        try:
-            server_proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            server_proc.kill()
-        print("OpenCode server stopped")
+        if args.resume:
+            orchestrator.resume()
+        else:
+            orchestrator.start()
+    except KeyboardInterrupt:
+        print("\nInterrupted by user. Run state saved to database.")
+        print("Resume with: python main.py --resume --run-task-id", orchestrator.config.run_task_id)
+        sys.exit(0)
+    except Exception as e:
+        print(f"\nError: {e}")
+        raise
 
 
 if __name__ == "__main__":

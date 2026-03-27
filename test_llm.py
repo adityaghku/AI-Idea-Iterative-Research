@@ -11,7 +11,6 @@ async def test_llm():
         from agents.llm_client import OpenCodeLLMClient
 
         client = OpenCodeLLMClient(
-            server_url="http://localhost:4096",
             system_prompt="You are a helpful assistant. Be concise.",
         )
 
