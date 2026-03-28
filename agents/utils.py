@@ -47,11 +47,16 @@ def call_db(cmd: str, db_path: str = DEFAULT_DB_PATH, **kwargs) -> Any:
     
     result = None
     try:
+        env = os.environ.copy()
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        env["PYTHONPATH"] = project_root + ":" + env.get("PYTHONPATH", "")
+        
         result = subprocess.run(
             args,
             capture_output=True,
             text=True,
             check=True,
+            env=env,
         )
         output = result.stdout.strip()
         if output == "null" or output == "OK":
@@ -352,3 +357,56 @@ def store_iteration_complete(
         stage="learner",
         json={"status": status},
     )
+
+
+def generate_embeddings_for_run(db_path: str, run_task_id: str) -> int:
+    """Generate embeddings for all ideas in a run that don't have embeddings yet."""
+    result = call_db("generate-embeddings", db_path, run_task_id=run_task_id)
+    if result and isinstance(result, dict):
+        return int(result.get("generated", 0))
+    return 0
+
+
+def merge_duplicate_ideas(db_path: str, threshold: float = 0.95) -> int:
+    """Find and merge duplicate ideas above threshold."""
+    result = call_db("merge-duplicates", db_path, threshold=threshold)
+    if result and isinstance(result, dict):
+        return int(result.get("merged", 0))
+    return 0
+
+
+def record_accumulated_knowledge(
+    db_path: str,
+    total_ideas: int,
+    unique_ideas: int,
+    merged_ideas: int,
+    top_tags: list[dict[str, Any]],
+) -> int:
+    """Record accumulated knowledge stats for cross-run tracking."""
+    result = call_db(
+        "record-accumulated-knowledge",
+        db_path,
+        total_ideas=total_ideas,
+        unique_ideas=unique_ideas,
+        merged_ideas=merged_ideas,
+        top_tags=json.dumps(top_tags),
+    )
+    if result and isinstance(result, dict):
+        return int(result.get("id", 0))
+    return 0
+
+
+def get_accumulated_stats(db_path: str) -> dict[str, Any] | None:
+    """Get the latest accumulated knowledge stats."""
+    result = call_db("get-accumulated-stats", db_path)
+    if result and isinstance(result, dict):
+        return result
+    return None
+
+
+def get_idea_stats(db_path: str) -> dict[str, Any]:
+    """Get current idea statistics for accumulated knowledge tracking."""
+    result = call_db("get-idea-stats", db_path)
+    if result and isinstance(result, dict):
+        return result
+    return {"total_ideas": 0, "unique_ideas": 0, "merged_ideas": 0, "top_tags": []}
