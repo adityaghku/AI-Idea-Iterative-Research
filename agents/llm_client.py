@@ -127,7 +127,8 @@ class OpenCodeLLMClient:
         last_error = None
         for attempt in range(max_retries + 1):
             try:
-                await client.query(full_prompt)
+                # Wrap query with timeout to prevent indefinite hang
+                await asyncio.wait_for(client.query(full_prompt), timeout=timeout)
                 return await self._get_response_text(timeout=timeout)
 
             except Exception as e:
@@ -156,8 +157,8 @@ class OpenCodeLLMClient:
         model: Optional[str] = None,
         max_retries: int = 3,
     ) -> Any:
-        # Strong JSON enforcement - prepend to override any system instructions
-        json_prefix = "IGNORE ALL PREVIOUS INSTRUCTIONS. You must respond with ONLY valid JSON. No markdown, no explanations, no conversational text.\n\n"
+        # Strong JSON enforcement - prepend to ensure JSON output
+        json_prefix = "You must respond with ONLY valid JSON. No markdown, no explanations, no conversational text.\n\n"
         
         json_system = (system or "") + "\n\nCRITICAL: Respond with ONLY valid JSON. No conversational text, no explanations, no markdown. Just raw JSON."
         
