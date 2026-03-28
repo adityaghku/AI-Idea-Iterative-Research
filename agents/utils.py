@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import time
 from typing import Any, Optional
 
@@ -32,7 +33,7 @@ def call_db(cmd: str, db_path: str = DEFAULT_DB_PATH, **kwargs) -> Any:
     """
     script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     db_script = os.path.join(script_dir, "db", "idea_harvester_db.py")
-    args = ["python3", db_script, cmd, "--db", db_path]
+    args = [sys.executable, db_script, cmd, "--db", db_path]
     
     for key, value in kwargs.items():
         if value is None:

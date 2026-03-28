@@ -133,6 +133,7 @@ class OpenCodeLLMClient:
 
             except Exception as e:
                 last_error = e
+                logger.warning(f"LLM query failed (attempt {attempt + 1}): {type(e).__name__}: {e}")
                 if attempt < max_retries:
                     await asyncio.sleep(1 * (attempt + 1))
                     try:
