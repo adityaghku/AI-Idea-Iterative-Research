@@ -877,7 +877,7 @@ def dashboard():
     
     if view == "all":
         stats_data = get_idea_stats(DB_PATH)
-        ideas = get_all_ideas(DB_PATH, limit=50)
+        ideas = [parse_idea(idea) for idea in get_all_ideas(DB_PATH, limit=50)]
         
         stats = {
             "total_ideas": stats_data.get("unique_ideas", 0),
