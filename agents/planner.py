@@ -38,6 +38,7 @@ class PlannerAgent:
         self.logger.info(f"[iter {input_data.iteration_number}] Planner generated {num_queries} queries")
 
         return PlannerOutput(
+            thinking=search_plan.get("thinking", ""),
             search_queries=search_plan.get("search_queries", []),
             target_sources=search_plan.get("target_sources", []),
             scraping_depth=search_plan.get("scraping_depth", 1),
@@ -125,6 +126,29 @@ Hot sectors with opportunities:
         prompt += """
 === YOUR TASK ===
 
+THINK OUT LOUD FIRST: Before generating queries, analyze specific user pains and friction points.
+
+Step 1: Think about WHO is suffering and WHAT they struggle with daily
+Step 2: Identify tedious manual tasks that waste time
+Step 3: Find friction points in workflows that could be automated
+Step 4: Consider what users complain about in forums, reviews, and discussions
+
+PAIN-DRIVEN QUERY EXAMPLES:
+- BAD: "AI startup ideas in healthcare"
+- GOOD: "what tasks do doctors hate doing manually that could be automated"
+
+- BAD: "AI applications for finance"
+- GOOD: "frustrating manual workflows in accounting that waste time"
+
+- BAD: "AI tools for education"
+- GOOD: "pain points teachers face with grading and lesson planning"
+
+- BAD: "AI solutions for small business"
+- GOOD: "repetitive administrative tasks small business owners dread"
+
+- BAD: "AI productivity tools"
+- GOOD: "time-consuming tasks knowledge workers want to automate"
+
 Generate a search plan targeting ideas that:
 - Solve clear problems in the hot sectors listed above
 - Leverage current AI capabilities (LLMs, vision, agents)
@@ -134,11 +158,12 @@ Generate a search plan targeting ideas that:
 
 Structure:
 {
+  "thinking": "Your chain-of-thought analysis of user pains, friction points, and tedious tasks that could be automated. Think out loud about WHO is suffering and WHAT they struggle with.",
   "search_queries": [
-    "specific targeted query focusing on hot sectors",
-    "query covering underserved niches",
-    "query for emerging AI applications",
-    "query for solo founder opportunities",
+    "pain-driven query focusing on specific user frustrations",
+    "query about tedious manual tasks in a domain",
+    "query for workflow friction points",
+    "query about what users complain about",
     "query for validated pain points"
   ],
   "target_sources": [
@@ -161,6 +186,7 @@ Requirements:
 - Avoid generic queries like "AI startup ideas"
 - Target sources where REAL users discuss REAL problems
 - Consider what worked/failed in previous iterations
+- THINK FIRST about user pains before generating queries
 
 Output ONLY valid JSON, no markdown formatting."""
         
@@ -168,6 +194,11 @@ Output ONLY valid JSON, no markdown formatting."""
     
     def _validate_plan(self, plan: dict[str, Any]) -> dict[str, Any]:
         """Validate and normalize the generated plan."""
+        # Extract thinking field (required for pain-driven CoT reasoning)
+        thinking = plan.get("thinking", "")
+        if not thinking:
+            self.logger.warning("LLM returned empty thinking field - pain analysis may be incomplete")
+        
         queries = plan.get("search_queries", [])[:5]
         if not queries:
             raise ValueError("LLM returned empty search_queries")
@@ -177,6 +208,7 @@ Output ONLY valid JSON, no markdown formatting."""
             raise ValueError("LLM returned empty target_sources")
         
         return {
+            "thinking": thinking,
             "search_queries": queries,
             "target_sources": sources,
             "scraping_depth": max(1, min(plan.get("scraping_depth", 1), 3)),

@@ -54,6 +54,14 @@ class ScraperAgent:
             self.trafilatura_config.set("DEFAULT", "MIN_EXTRACTED_SIZE", "100")  # Min 100 chars
             self.trafilatura_config.set("DEFAULT", "MAX_RETRIES", "2")
 
+    def _get_url_priority(self, url: str) -> int:
+        """Return priority score for URL. Higher = more important."""
+        if "reddit.com" in url:
+            return 2
+        if "x.com" in url or "twitter.com" in url:
+            return 2
+        return 1
+
     async def scrape(self, input_data: ScraperInput) -> ScraperOutput:
         """Scrape URLs with cooldown enforcement and concurrent fetching."""
         self.logger.info(f"[iter {input_data.iteration_number}] Scraper starting: {len(input_data.urls)} URLs")
@@ -72,8 +80,10 @@ class ScraperAgent:
         extracted = []
         failures = []
 
-        # Limit to 5 URLs per batch
-        urls_to_scrape = urls[:5]
+        # Sort by priority (descending) so important URLs are first
+        sorted_urls = sorted(urls, key=lambda u: self._get_url_priority(u), reverse=True)
+        self.logger.info(f"URL priorities: {[f'{u} ({self._get_url_priority(u)})' for u in sorted_urls[:8]]}")
+        urls_to_scrape = sorted_urls[:5]
 
         # Create semaphore for concurrent fetching
         semaphore = asyncio.Semaphore(self.max_concurrent)

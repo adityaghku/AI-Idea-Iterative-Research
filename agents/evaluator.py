@@ -24,7 +24,7 @@ from .cache import ResponseCache
 class EvaluatorAgent:
     """Scores ideas using dynamically learned criteria about startup success."""
 
-    def __init__(self, db_path: str = DEFAULT_DB_PATH, max_concurrent: int = 5):
+    def __init__(self, db_path: str = DEFAULT_DB_PATH, max_concurrent: int = 1):
         self.db_path = db_path
         self.meta_learning = MetaLearningAgent(db_path=db_path)
         self.logger = get_logger()
@@ -151,9 +151,12 @@ For each idea, evaluate using the learned criteria above and provide:
 
 5. **Red Flags Check**: Does this idea exhibit any of the failure patterns mentioned above?
 
+IMPORTANT: Think out loud before assigning scores. Show your reasoning process.
+
 Output as JSON array:
 [
   {{
+    "thinking": "Your step-by-step reasoning about this idea's strengths, weaknesses, and why you're assigning these specific scores...",
     "idea_title": "...",
     "idea_summary": "...",
     "detailed_scores": {{
@@ -171,12 +174,16 @@ Output as JSON array:
     "strengths": ["...", "..."],
     "risks": ["...", "..."],
     "advice": "...",
-    "red_flags": ["..."]
+    "red_flags": ["..."],
+    "citations": ["Specific URL or text evidence from source", "Another piece of evidence"]
   }}
 ]
 
-Be critical and honest. Most ideas should score 40-70. Only truly exceptional opportunities should score 80+.
-Only output valid JSON, no markdown."""
+CRITICAL REQUIREMENTS:
+- You MUST provide citations (specific URLs or quoted text evidence from the source material) for any score above 70.
+- Without citations, high scores will be capped at 70.
+- Be critical and honest. Most ideas should score 40-70. Only truly exceptional opportunities should score 80+.
+- Only output valid JSON, no markdown."""
 
         ideas_data = await async_llm_complete_json(
             prompt=prompt,
@@ -218,6 +225,14 @@ Only output valid JSON, no markdown."""
             # Use total score if provided, otherwise calculate
             total_score = idea_data.get("total_score", score_breakdown.total())
             
+            thinking = idea_data.get("thinking", "")
+            citations = idea_data.get("citations", [])
+            
+            # Cap scores > 70 if no citations provided
+            if total_score > 70 and not citations:
+                self.logger.warning(f"Score capped to 70 for '{idea_data.get('idea_title', 'Untitled')}' - no citations provided")
+                total_score = 70
+            
             # Build rich explanation
             explanation_parts = [
                 f"Verdict: {idea_data.get('verdict', 'N/A')}",
@@ -243,12 +258,14 @@ Only output valid JSON, no markdown."""
                 explanation_parts.extend([f"  - {rf}" for rf in idea_data.get("red_flags", [])])
             
             idea = Idea(
+                thinking=thinking,
                 idea_title=idea_data.get("idea_title", "Untitled"),
                 idea_summary=idea_data.get("idea_summary", ""),
                 source_urls=[url],
                 score=int(total_score),
                 score_breakdown=score_breakdown,
                 evaluator_explain="\n".join(explanation_parts),
+                citations=citations,
                 idea_payload={
                     "detailed_scores": detailed,
                     "verdict": idea_data.get("verdict"),

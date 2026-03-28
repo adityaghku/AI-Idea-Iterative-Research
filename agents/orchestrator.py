@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sqlite3
 from typing import Any, Optional
 
 from .logger import get_logger
@@ -13,6 +14,7 @@ from .config import (
     ResearcherInput,
     ScraperInput,
     EvaluatorInput,
+    CriticInput,
     TaggerInput,
     LearnerInput,
     DEFAULT_MAX_ITERATIONS,
@@ -34,11 +36,17 @@ from .utils import (
     list_pending_messages,
     get_knowledge,
     set_knowledge,
+    generate_embeddings_for_run,
+    merge_duplicate_ideas,
+    record_accumulated_knowledge,
+    get_accumulated_stats,
+    get_idea_stats,
 )
 from .planner import PlannerAgent
 from .researcher import ResearcherAgent
 from .scraper import ScraperAgent
 from .evaluator import EvaluatorAgent
+from .critic import CriticAgent
 from .tagger import TaggerAgent
 from .learner import LearnerAgent
 
@@ -71,6 +79,7 @@ class Orchestrator:
             Stage.RESEARCHER: ResearcherAgent(db_path=db_path),
             Stage.SCRAPER: ScraperAgent(db_path=db_path),
             Stage.EVALUATOR: EvaluatorAgent(db_path=db_path),
+            Stage.CRITIC: CriticAgent(),
             Stage.TAGGER: TaggerAgent(),
             Stage.LEARNER: LearnerAgent(db_path=db_path),
         }
@@ -208,12 +217,13 @@ class Orchestrator:
             (Stage.RESEARCHER.value, "Finding candidate URLs"),
             (Stage.SCRAPER.value, "Extracting content (throttled)"),
             (Stage.EVALUATOR.value, "Scoring ideas"),
+            (Stage.CRITIC.value, "Adversarial vetting"),
             (Stage.LEARNER.value, "Computing validation and learning"),
         ]
 
         for i, (stage, description) in enumerate(stages, 1):
-            self.logger.info(f"[iter {iteration_number}] Stage {i}/5: {stage}")
-            print(f"\n[{i}/5] {stage.capitalize()}: {description}...")
+            self.logger.info(f"[iter {iteration_number}] Stage {i}/6: {stage}")
+            print(f"\n[{i}/6] {stage.capitalize()}: {description}...")
 
             result = self._execute_stage(stage, iteration_number)
             if not result:
@@ -362,8 +372,8 @@ class Orchestrator:
                 "extracted_content": scraper_data.get("extracted", []),
             }
         
-        elif stage == Stage.LEARNER:
-            # Get evaluator output and iteration scores
+        elif stage == Stage.CRITIC:
+            # Get evaluator output
             evaluator_data = get_knowledge(
                 self.db_path,
                 self.config.run_task_id,
@@ -372,6 +382,48 @@ class Orchestrator:
             if not evaluator_data:
                 print("No evaluator output found")
                 return None
+            
+            # Convert dict ideas back to Idea objects
+            from .config import Idea, IdeaScore
+            ideas = []
+            for idea_dict in evaluator_data.get("ideas", []):
+                sb = idea_dict.get("score_breakdown", {})
+                idea = Idea(
+                    idea_title=idea_dict.get("idea_title", ""),
+                    idea_summary=idea_dict.get("idea_summary", ""),
+                    source_urls=idea_dict.get("source_urls", []),
+                    score=idea_dict.get("score", 0),
+                    score_breakdown=IdeaScore(
+                        novelty=sb.get("novelty", 0),
+                        feasibility=sb.get("feasibility", 0),
+                        market_potential=sb.get("market_potential", 0)
+                    ),
+                    evaluator_explain=idea_dict.get("evaluator_explain", ""),
+                )
+                ideas.append(idea)
+            
+            return {
+                "run_task_id": self.config.run_task_id,
+                "iteration_number": iteration_number,
+                "ideas": ideas,
+            }
+        
+        elif stage == Stage.LEARNER:
+            critic_data = get_knowledge(
+                self.db_path,
+                self.config.run_task_id,
+                f"critic_output_{iteration_number}"
+            )
+            evaluator_data = get_knowledge(
+                self.db_path,
+                self.config.run_task_id,
+                f"evaluator_output_{iteration_number}"
+            )
+            if not evaluator_data:
+                print("No evaluator output found")
+                return None
+            
+            ideas = critic_data.get("vetted_ideas", []) if critic_data else evaluator_data.get("ideas", [])
             
             scores = get_iteration_scores(self.db_path, self.config.run_task_id)
             avg_score = 0.0
@@ -383,7 +435,7 @@ class Orchestrator:
             return {
                 "run_task_id": self.config.run_task_id,
                 "iteration_number": iteration_number,
-                "ideas": evaluator_data.get("ideas", []),
+                "ideas": ideas,
                 "avg_score": avg_score,
             }
         
@@ -462,6 +514,19 @@ class Orchestrator:
                     result_dict,
                 )
                 print(f"  Evaluated {len(result.ideas)} ideas")
+                return result_dict
+
+            elif stage_enum == Stage.CRITIC:
+                result = asyncio.run(agent.vet(CriticInput(**payload)))
+                result_dict = result.to_dict()
+
+                set_knowledge(
+                    self.db_path,
+                    self.config.run_task_id,
+                    f"critic_output_{iteration_number}",
+                    result_dict,
+                )
+                print(f"  Vetted {len(result.vetted_ideas)} ideas")
                 return result_dict
 
             elif stage_enum == Stage.TAGGER:
@@ -554,16 +619,52 @@ class Orchestrator:
         return improvement <= self.config.min_improvement
     
     def _load_accumulated_ideas(self) -> list[dict[str, Any]]:
-        """Load ideas from existing idea-harvester.json if it exists."""
-        if not os.path.exists("idea-harvester.json"):
-            return []
-        
+        """Load accumulated ideas from database (non-merged ideas sorted by score)."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
         try:
-            with open("idea-harvester.json", "r") as f:
-                data = json.load(f)
-            return data.get("top_ideas", [])
-        except (json.JSONDecodeError, IOError):
+            rows = conn.execute(
+                """
+                SELECT
+                  i.idea_id,
+                  i.iteration_number,
+                  i.source_urls,
+                  i.idea_title,
+                  i.idea_summary,
+                  i.idea_payload,
+                  i.score,
+                  i.score_breakdown,
+                  i.evaluator_explain,
+                  GROUP_CONCAT(DISTINCT t.name) AS tag_names
+                FROM ideas i
+                LEFT JOIN idea_tags it ON i.idea_id = it.idea_id
+                LEFT JOIN tags t ON it.tag_id = t.tag_id
+                WHERE i.canonical_idea_id IS NULL
+                GROUP BY i.idea_id
+                ORDER BY i.score DESC, i.iteration_number ASC
+                """
+            ).fetchall()
+
+            ideas: list[dict[str, Any]] = []
+            for r in rows:
+                idea = {
+                    "idea_id": int(r["idea_id"]),
+                    "iteration_number": int(r["iteration_number"]),
+                    "source_urls": json.loads(r["source_urls"]),
+                    "idea_title": r["idea_title"],
+                    "idea_summary": r["idea_summary"],
+                    "idea_payload": json.loads(r["idea_payload"]),
+                    "score": float(r["score"]),
+                    "score_breakdown": json.loads(r["score_breakdown"]) if r["score_breakdown"] else {},
+                    "evaluator_explain": r["evaluator_explain"],
+                    "tags": r["tag_names"].split(",") if r["tag_names"] else [],
+                }
+                ideas.append(idea)
+            return ideas
+        except sqlite3.Error:
             return []
+        finally:
+            conn.close()
     
     def _merge_ideas(
         self, existing: list[dict[str, Any]], new: list[dict[str, Any]]
@@ -597,7 +698,7 @@ class Orchestrator:
         
         existing_ideas = self._load_accumulated_ideas()
         if existing_ideas:
-            print(f"  Loaded {len(existing_ideas)} existing ideas from idea-harvester.json")
+            print(f"  Loaded {len(existing_ideas)} accumulated ideas from database")
             all_ideas = self._merge_ideas(existing_ideas, new_ideas)
         else:
             all_ideas = new_ideas
@@ -605,31 +706,34 @@ class Orchestrator:
         top_ideas = all_ideas[:20]
         print(f"  Merged total: {len(all_ideas)} ideas, keeping top {len(top_ideas)}")
         
-        # Write JSON output
-        json_output = {
-            "run_task_id": self.config.run_task_id,
-            "goal": self.config.goal,
-            "total_ideas": len(top_ideas),
-            "top_ideas": top_ideas,
-        }
+        emb_count = generate_embeddings_for_run(self.db_path, self.config.run_task_id)
+        print(f"  Generated embeddings for {emb_count} ideas")
         
-        with open("idea-harvester.json", "w") as f:
-            json.dump(json_output, f, indent=2)
-        print("  Written: idea-harvester.json")
+        merge_count = merge_duplicate_ideas(self.db_path)
+        if merge_count > 0:
+            print(f"  Merged {merge_count} duplicate ideas")
         
-        # Write Markdown output
+        stats = get_idea_stats(self.db_path)
+        record_accumulated_knowledge(
+            db_path=self.db_path,
+            total_ideas=stats["total_ideas"],
+            unique_ideas=stats["unique_ideas"],
+            merged_ideas=stats["merged_ideas"],
+            top_tags=stats["top_tags"],
+        )
+        print(f"  Recorded accumulated knowledge: {stats['total_ideas']} total, {stats['unique_ideas']} unique, {stats['merged_ideas']} merged")
+        
         md_content = self._generate_markdown(top_ideas)
         with open("idea-harvester.md", "w") as f:
             f.write(md_content)
         print("  Written: idea-harvester.md")
         
-        # Write last iteration report
         report = self._generate_iteration_report()
         with open("idea-harvester-last-iteration-report.md", "w") as f:
             f.write(report)
         print("  Written: idea-harvester-last-iteration-report.md")
         
-        print(f"\nRun complete! Found {len(top_ideas)} top ideas.")
+        print(f"\nRun complete! Found {len(top_ideas)} top ideas (stored in DB).")
     
     def _generate_markdown(self, ideas: list[dict[str, Any]]) -> str:
         """Generate markdown output for top ideas."""

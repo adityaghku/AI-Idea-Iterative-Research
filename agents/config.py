@@ -12,6 +12,7 @@ class Stage(str, Enum):
     RESEARCHER = "researcher"
     SCRAPER = "scraper"
     EVALUATOR = "evaluator"
+    CRITIC = "critic"
     TAGGER = "tagger"
     LEARNER = "learner"
     FINALIZE = "finalize"
@@ -56,13 +57,15 @@ class PlannerInput:
 @dataclass
 class PlannerOutput:
     """Output from Planner agent."""
-    search_queries: list[str]
-    target_sources: list[str]
-    scraping_depth: int
-    filters: dict[str, Any]
+    thinking: str = ""
+    search_queries: list[str] = field(default_factory=list)
+    target_sources: list[str] = field(default_factory=list)
+    scraping_depth: int = 0
+    filters: dict[str, Any] = field(default_factory=dict)
     
     def to_dict(self) -> dict[str, Any]:
         return {
+            "thinking": self.thinking,
             "search_queries": self.search_queries,
             "target_sources": self.target_sources,
             "scraping_depth": self.scraping_depth,
@@ -140,16 +143,19 @@ class IdeaScore:
 @dataclass
 class Idea:
     """An evaluated idea."""
-    idea_title: str
-    idea_summary: str
-    source_urls: list[str]
-    score: int
-    score_breakdown: IdeaScore
-    evaluator_explain: str
+    thinking: str = ""
+    idea_title: str = ""
+    idea_summary: str = ""
+    source_urls: list[str] = field(default_factory=list)
+    score: int = 0
+    score_breakdown: IdeaScore = field(default_factory=lambda: IdeaScore(0, 0, 0))
+    evaluator_explain: str = ""
+    citations: list[str] = field(default_factory=list)
     idea_payload: dict[str, Any] = field(default_factory=dict)
     
     def to_dict(self) -> dict[str, Any]:
         return {
+            "thinking": self.thinking,
             "idea_title": self.idea_title,
             "idea_summary": self.idea_summary,
             "source_urls": self.source_urls,
@@ -160,6 +166,7 @@ class Idea:
                 "market_potential": self.score_breakdown.market_potential,
             },
             "evaluator_explain": self.evaluator_explain,
+            "citations": self.citations,
             "idea_payload": self.idea_payload,
         }
 
@@ -187,11 +194,13 @@ class TaggerInput:
 @dataclass
 class TaggerOutput:
     """Output from Tagger agent."""
-    tagged_ideas: list[dict[str, Any]]
-    tag_counts: dict[str, int]
+    thinking: str = ""
+    tagged_ideas: list[dict[str, Any]] = field(default_factory=list)
+    tag_counts: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "thinking": self.thinking,
             "tagged_ideas": self.tagged_ideas,
             "tag_counts": self.tag_counts,
         }
@@ -228,6 +237,27 @@ class LearnerOutput:
             "next_highest_value_action": self.next_highest_value_action,
             "knowledge_updates": self.knowledge_updates,
             "iteration_report": self.iteration_report,
+        }
+
+
+@dataclass
+class CriticInput:
+    """Input for Critic agent."""
+    run_task_id: str
+    iteration_number: int
+    ideas: list[Idea]
+
+
+@dataclass
+class CriticOutput:
+    """Output from Critic agent."""
+    thinking: str = ""
+    vetted_ideas: list[dict[str, Any]] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "thinking": self.thinking,
+            "vetted_ideas": self.vetted_ideas,
         }
 
 

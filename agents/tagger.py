@@ -91,10 +91,14 @@ class TaggerAgent:
 
         batches = self._chunk_ideas(input_data.ideas, self.batch_size)
         
+        all_thinking_parts: list[str] = []
+        
         for batch_idx, batch in enumerate(batches):
             self.logger.info(f"Processing batch {batch_idx + 1}/{len(batches)} ({len(batch)} ideas)")
             
-            batch_result = await self._tag_batch(batch, categories)
+            batch_result, batch_thinking = await self._tag_batch(batch, categories)
+            if batch_thinking:
+                all_thinking_parts.append(batch_thinking)
             
             for tagged_idea in batch_result:
                 all_tagged_ideas.append(tagged_idea)
@@ -105,7 +109,10 @@ class TaggerAgent:
 
         self.logger.info(f"Tagger complete: {len(all_tagged_ideas)} ideas tagged, {len(tag_counts)} unique tags")
 
+        combined_thinking = " ".join(all_thinking_parts)
+
         return TaggerOutput(
+            thinking=combined_thinking,
             tagged_ideas=all_tagged_ideas,
             tag_counts=tag_counts,
         )
@@ -118,7 +125,7 @@ class TaggerAgent:
         self,
         ideas: list[dict[str, Any]],
         categories: list[str],
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], str]:
         """Tag a batch of ideas using LLM."""
 
         # Build category descriptions for prompt
@@ -135,20 +142,24 @@ TAG CATEGORIES:
 IDEAS TO TAG:
 {ideas_text}
 
-For each idea, extract 2-5 relevant tags from the categories above. Each tag must belong to exactly one category.
+Think out loud about what categories these ideas belong to. Consider the industry, technology stack, business model, and founder fit for each idea before assigning tags.
 
-Output as JSON array:
-[
-  {{
-    "idea_title": "<exact title from input>",
-    "tags": ["Tag1", "Tag2", ...],
-    "tag_categories": {{
-      "Tag1": "category_name",
-      "Tag2": "category_name",
-      ...
+Output as JSON with thinking first, then tagged_ideas:
+{{
+  "thinking": "Your chain-of-thought reasoning about appropriate tags for all ideas, considering categories and fit",
+  "tagged_ideas": [
+    {{
+      "idea_title": "<exact title from input>",
+      "thinking": "Your reasoning about which tags fit this specific idea",
+      "tags": ["Tag1", "Tag2", ...],
+      "tag_categories": {{
+        "Tag1": "category_name",
+        "Tag2": "category_name",
+        ...
+      }}
     }}
-  }}
-]
+  ]
+}}
 
 Rules:
 1. Use EXACT tag names from the categories above (case-sensitive)
@@ -165,17 +176,26 @@ Only output valid JSON, no markdown."""
             temperature=0.3,
         )
 
-        if not isinstance(response, list):
-            self.logger.warning(f"LLM returned non-list response: {type(response).__name__}")
-            return []
+        if not isinstance(response, dict):
+            self.logger.warning(f"LLM returned non-dict response: {type(response).__name__}")
+            return [], ""
+
+        thinking = response.get("thinking", "")
+        batch_thinking = thinking
+        tagged_ideas = response.get("tagged_ideas", [])
+        
+        if not isinstance(tagged_ideas, list):
+            self.logger.warning(f"LLM returned non-list tagged_ideas: {type(tagged_ideas).__name__}")
+            return [], ""
 
         # Validate and clean response
         validated = []
-        for item in response:
+        for item in tagged_ideas:
             if not isinstance(item, dict):
                 continue
             
             idea_title = item.get("idea_title", "")
+            item_thinking = item.get("thinking", "")
             tags = item.get("tags", [])
             tag_categories = item.get("tag_categories", {})
 
@@ -191,11 +211,12 @@ Only output valid JSON, no markdown."""
 
             validated.append({
                 "idea_title": idea_title,
+                "thinking": item_thinking,
                 "tags": cleaned_tags,
                 "tag_categories": cleaned_categories,
             })
 
-        return validated
+        return validated, batch_thinking
 
     def _build_category_descriptions(self, categories: list[str]) -> str:
         """Build category descriptions for the LLM prompt."""
