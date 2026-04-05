@@ -15,7 +15,6 @@ from .config import (
     ScraperInput,
     EvaluatorInput,
     CriticInput,
-    TaggerInput,
     LearnerInput,
     DEFAULT_MAX_ITERATIONS,
     DEFAULT_PLATEAU_WINDOW,
@@ -47,7 +46,6 @@ from .researcher import ResearcherAgent
 from .scraper import ScraperAgent
 from .evaluator import EvaluatorAgent
 from .critic import CriticAgent
-from .tagger import TaggerAgent
 from .learner import LearnerAgent
 
 
@@ -80,7 +78,6 @@ class Orchestrator:
             Stage.SCRAPER: ScraperAgent(db_path=db_path),
             Stage.EVALUATOR: EvaluatorAgent(db_path=db_path),
             Stage.CRITIC: CriticAgent(),
-            Stage.TAGGER: TaggerAgent(),
             Stage.LEARNER: LearnerAgent(db_path=db_path),
         }
         self._stop_sentinel = ".idea-harvester-off"
@@ -220,10 +217,11 @@ class Orchestrator:
             (Stage.CRITIC.value, "Adversarial vetting"),
             (Stage.LEARNER.value, "Computing validation and learning"),
         ]
+        n_stages = len(stages)
 
         for i, (stage, description) in enumerate(stages, 1):
-            self.logger.info(f"[iter {iteration_number}] Stage {i}/6: {stage}")
-            print(f"\n[{i}/6] {stage.capitalize()}: {description}...")
+            self.logger.info(f"[iter {iteration_number}] Stage {i}/{n_stages}: {stage}")
+            print(f"\n[{i}/{n_stages}] {stage.capitalize()}: {description}...")
 
             result = self._execute_stage(stage, iteration_number)
             if not result:
@@ -405,25 +403,28 @@ class Orchestrator:
             return {
                 "run_task_id": self.config.run_task_id,
                 "iteration_number": iteration_number,
-                "ideas": ideas,
+                "ideas": [idea.to_dict() for idea in ideas],
             }
-        
+
         elif stage == Stage.LEARNER:
             critic_data = get_knowledge(
                 self.db_path,
                 self.config.run_task_id,
-                f"critic_output_{iteration_number}"
+                f"critic_output_{iteration_number}",
             )
             evaluator_data = get_knowledge(
                 self.db_path,
                 self.config.run_task_id,
-                f"evaluator_output_{iteration_number}"
+                f"evaluator_output_{iteration_number}",
             )
             if not evaluator_data:
                 print("No evaluator output found")
                 return None
-            
-            ideas = critic_data.get("vetted_ideas", []) if critic_data else evaluator_data.get("ideas", [])
+
+            if critic_data:
+                ideas = critic_data.get("vetted_ideas", [])
+            else:
+                ideas = evaluator_data.get("ideas", [])
             
             scores = get_iteration_scores(self.db_path, self.config.run_task_id)
             avg_score = 0.0
@@ -529,24 +530,6 @@ class Orchestrator:
                 print(f"  Vetted {len(result.vetted_ideas)} ideas")
                 return result_dict
 
-            elif stage_enum == Stage.TAGGER:
-                ideas = payload.get("ideas", [])
-                tagger_input = TaggerInput(
-                    ideas=ideas,
-                    categories=["industry", "technology", "business_model", "founder_fit"],
-                )
-                result = asyncio.run(agent.execute(tagger_input))
-                result_dict = result.to_dict()
-
-                set_knowledge(
-                    self.db_path,
-                    self.config.run_task_id,
-                    f"tagger_output_{iteration_number}",
-                    result_dict,
-                )
-                print(f"  Tagged {len(result.tagged_ideas)} ideas, {len(result.tag_counts)} unique tags")
-                return result_dict
-
             elif stage_enum == Stage.LEARNER:
                 result = agent.learn(LearnerInput(**payload))
                 result_dict = result.to_dict()
@@ -626,22 +609,18 @@ class Orchestrator:
             rows = conn.execute(
                 """
                 SELECT
-                  i.idea_id,
-                  i.iteration_number,
-                  i.source_urls,
-                  i.idea_title,
-                  i.idea_summary,
-                  i.idea_payload,
-                  i.score,
-                  i.score_breakdown,
-                  i.evaluator_explain,
-                  GROUP_CONCAT(DISTINCT t.name) AS tag_names
-                FROM ideas i
-                LEFT JOIN idea_tags it ON i.idea_id = it.idea_id
-                LEFT JOIN tags t ON it.tag_id = t.tag_id
-                WHERE i.canonical_idea_id IS NULL
-                GROUP BY i.idea_id
-                ORDER BY i.score DESC, i.iteration_number ASC
+                  idea_id,
+                  iteration_number,
+                  source_urls,
+                  idea_title,
+                  idea_summary,
+                  idea_payload,
+                  score,
+                  score_breakdown,
+                  evaluator_explain
+                FROM ideas
+                WHERE canonical_idea_id IS NULL
+                ORDER BY score DESC, iteration_number ASC
                 """
             ).fetchall()
 
@@ -657,11 +636,11 @@ class Orchestrator:
                     "score": float(r["score"]),
                     "score_breakdown": json.loads(r["score_breakdown"]) if r["score_breakdown"] else {},
                     "evaluator_explain": r["evaluator_explain"],
-                    "tags": r["tag_names"].split(",") if r["tag_names"] else [],
                 }
                 ideas.append(idea)
             return ideas
-        except sqlite3.Error:
+        except sqlite3.Error as e:
+            self.logger.error(f"Database error in _load_accumulated_ideas: {e}")
             return []
         finally:
             conn.close()
@@ -719,131 +698,7 @@ class Orchestrator:
             total_ideas=stats["total_ideas"],
             unique_ideas=stats["unique_ideas"],
             merged_ideas=stats["merged_ideas"],
-            top_tags=stats["top_tags"],
         )
         print(f"  Recorded accumulated knowledge: {stats['total_ideas']} total, {stats['unique_ideas']} unique, {stats['merged_ideas']} merged")
         
-        md_content = self._generate_markdown(top_ideas)
-        with open("idea-harvester.md", "w") as f:
-            f.write(md_content)
-        print("  Written: idea-harvester.md")
-        
-        report = self._generate_iteration_report()
-        with open("idea-harvester-last-iteration-report.md", "w") as f:
-            f.write(report)
-        print("  Written: idea-harvester-last-iteration-report.md")
-        
         print(f"\nRun complete! Found {len(top_ideas)} top ideas (stored in DB).")
-    
-    def _generate_markdown(self, ideas: list[dict[str, Any]]) -> str:
-        """Generate markdown output for top ideas."""
-        lines = [
-            "# Idea Harvester Results",
-            "",
-            f"**Run ID:** {self.config.run_task_id}",
-            f"**Goal:** {self.config.goal}",
-            f"**Total Ideas:** {len(ideas)}",
-            "",
-            "---",
-            "",
-        ]
-        
-        for i, idea in enumerate(ideas, 1):
-            lines.extend([
-                f"## {i}. {idea.get('idea_title', 'Untitled')} (Score: {idea.get('score', 0)})",
-                "",
-                f"**Summary:** {idea.get('idea_summary', 'No summary')}",
-                "",
-                "**Score Breakdown:**",
-            ])
-            
-            breakdown = idea.get('score_breakdown', {})
-            if breakdown:
-                lines.append(f"- Novelty: {breakdown.get('novelty', 'N/A')}")
-                lines.append(f"- Feasibility: {breakdown.get('feasibility', 'N/A')}")
-                lines.append(f"- Market Potential: {breakdown.get('market_potential', 'N/A')}")
-            
-            lines.extend([
-                "",
-                f"**Explanation:** {idea.get('evaluator_explain', 'No explanation')}",
-                "",
-                "**Sources:**",
-            ])
-            
-            for url in idea.get('source_urls', []):
-                lines.append(f"- {url}")
-            
-            lines.extend([
-                "",
-                "---",
-                "",
-            ])
-        
-        return "\n".join(lines)
-    
-    def _generate_iteration_report(self) -> str:
-        """Generate the last iteration report."""
-        scores = get_iteration_scores(self.db_path, self.config.run_task_id)
-        
-        if not scores:
-            return "# Iteration Report\n\nNo iterations completed."
-        
-        last_iteration = max(s["iteration_number"] for s in scores)
-        learner_output = get_knowledge(
-            self.db_path,
-            self.config.run_task_id,
-            f"learner_output_{last_iteration}"
-        ) or {}
-        
-        lines = [
-            "# Idea Harvester - Last Iteration Report",
-            "",
-            f"**Run ID:** {self.config.run_task_id}",
-            f"**Last Iteration:** {last_iteration}",
-            "",
-            "## Score Progression",
-            "",
-        ]
-        
-        for s in scores:
-            if s.get("avg_score") is not None:
-                lines.append(f"- Iteration {s['iteration_number']}: {s['avg_score']:.2f}")
-        
-        lines.extend([
-            "",
-            "## Validation",
-            "",
-        ])
-        
-        validation = learner_output.get("validation", {})
-        lines.append(f"**Score:** {validation.get('validation_score', 'N/A')}")
-        lines.append("")
-        lines.append(f"**Explanation:** {validation.get('validation_explain', 'No explanation')}")
-        lines.append("")
-        lines.append(f"**Did Improve:** {learner_output.get('did_improve', 'N/A')}")
-        lines.append("")
-        
-        lines.extend([
-            "## What Failed",
-            "",
-        ])
-        
-        what_failed = learner_output.get("what_failed", [])
-        if what_failed:
-            for failure in what_failed:
-                lines.append(f"- {failure}")
-        else:
-            lines.append("No failures recorded.")
-        
-        lines.extend([
-            "",
-            "## Next Highest Value Action",
-            "",
-            f"**Action:** {learner_output.get('next_highest_value_action', 'N/A')}",
-            "",
-            "## Summary",
-            "",
-            learner_output.get("iteration_report", "No report available."),
-        ])
-        
-        return "\n".join(lines)

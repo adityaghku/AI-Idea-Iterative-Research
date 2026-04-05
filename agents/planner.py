@@ -74,7 +74,7 @@ class PlannerAgent:
             temperature=0.7,
         )
 
-        return self._validate_plan(result)
+        return self._validate_plan(self._coerce_plan_to_dict(result))
     
     def _build_prompt(self, context: dict[str, Any]) -> str:
         """Build the LLM prompt incorporating learned criteria."""
@@ -85,113 +85,155 @@ class PlannerAgent:
         hot_sectors = context.get("hot_sectors", [])
         saturated = context.get("saturated_markets", [])
         
-        prompt = f"""You are planning a search strategy for discovering innovative AI application ideas.
+        prompt = f"""You are planning a search strategy for discovering innovative mobile app ideas.
 
 Goal: {goal}
 Iteration: {iteration}
 
 === LEARNED STARTUP SUCCESS CRITERIA ===
 
-Focus on finding ideas that meet these success factors (in priority order):
+Focus on finding mobile app ideas that meet these success factors (in priority order):
 
-1. Problem Clarity - Clear, painful problem being solved
-2. AI Advantage - Genuinely requires AI (not AI for AI's sake)
-3. Technical Feasibility - Can be built with today's technology
-4. Solo Founder Feasible - One person can build and launch
+1. Problem Clarity - Clear, painful problem being solved for mobile users
+2. Mobile-Native Advantage - Leverages mobile-specific features (camera, GPS, sensors, offline)
+3. Technical Feasibility - Can be built with today's mobile tech (React Native, Flutter, Swift, Kotlin)
+4. Solo Founder Feasible - One person can build MVP and launch on app stores
 5. Market Timing - Right time, not too early/late
-6. Distribution Path - Clear way to reach customers
-7. Monetization Clarity - Willingness to pay exists
-8. Defensibility - Sustainable competitive advantage
+6. Distribution Path - Clear way to reach mobile users (App Store, Play Store, social, influencers)
+7. Monetization Clarity - Clear mobile monetization model (freemium, subscriptions, in-app purchases)
+8. Defensibility - Sustainable competitive advantage or network effects
 
 === CURRENT MARKET INSIGHTS ===
 
-Hot sectors with opportunities:
+Hot sectors with mobile app opportunities:
 """
-        
+
         for sector in hot_sectors[:5]:
             prompt += f"- {sector}\n"
-        
+
         prompt += "\nSaturated markets to avoid:\n"
         for market in saturated[:4]:
             prompt += f"- {market}\n"
-        
+
         if knowledge:
             prompt += f"\n=== PREVIOUS LEARNINGS ===\n{json.dumps(knowledge, indent=2)}\n"
-        
+
         if failures:
             prompt += "\n=== FAILURES TO AVOID ===\n"
             for failure in failures:
                 prompt += f"- {failure}\n"
-        
+
         prompt += """
 === YOUR TASK ===
 
-THINK OUT LOUD FIRST: Before generating queries, analyze specific user pains and friction points.
+THINK OUT LOUD FIRST: Before generating queries, analyze specific user pains and friction points that could be solved by a mobile app.
 
-Step 1: Think about WHO is suffering and WHAT they struggle with daily
-Step 2: Identify tedious manual tasks that waste time
-Step 3: Find friction points in workflows that could be automated
-Step 4: Consider what users complain about in forums, reviews, and discussions
+Step 1: Think about WHO is suffering and WHAT they struggle with daily ON THEIR PHONES
+Step 2: Identify annoying mobile experiences, tedious tasks, or gaps in existing apps
+Step 3: Find friction points in people's daily lives that a mobile app could solve
+Step 4: Consider what users complain about in app reviews, forums, Reddit, and discussions
 
 PAIN-DRIVEN QUERY EXAMPLES:
-- BAD: "AI startup ideas in healthcare"
-- GOOD: "what tasks do doctors hate doing manually that could be automated"
+- BAD: "mobile app ideas for healthcare"
+- GOOD: "what daily tasks do people wish they could do on their phone but can't"
 
-- BAD: "AI applications for finance"
-- GOOD: "frustrating manual workflows in accounting that waste time"
+- BAD: "mobile apps for productivity"
+- GOOD: "frustrating moments where people reach for their phone but no good app exists"
 
-- BAD: "AI tools for education"
-- GOOD: "pain points teachers face with grading and lesson planning"
+- BAD: "app ideas for students"
+- GOOD: "what problems do college students face daily that an app could solve"
 
-- BAD: "AI solutions for small business"
-- GOOD: "repetitive administrative tasks small business owners dread"
+- BAD: "mobile business ideas"
+- GOOD: "reddit threads about apps people wish existed"
 
-- BAD: "AI productivity tools"
-- GOOD: "time-consuming tasks knowledge workers want to automate"
+- BAD: "best mobile startups"
+- GOOD: "painful daily routines that could be simplified with a smartphone app"
 
-Generate a search plan targeting ideas that:
-- Solve clear problems in the hot sectors listed above
-- Leverage current AI capabilities (LLMs, vision, agents)
-- Are feasible for solo founders to build
-- Have clear paths to market and monetization
+Generate a search plan targeting mobile app ideas that:
+- Solve clear problems for mobile users
+- Are feasible for solo founders to build and launch on app stores
+- Have clear monetization paths (subscriptions, freemium, in-app purchases)
 - Avoid saturated markets and red flags
 
 Structure:
 {
-  "thinking": "Your chain-of-thought analysis of user pains, friction points, and tedious tasks that could be automated. Think out loud about WHO is suffering and WHAT they struggle with.",
+  "thinking": "Your chain-of-thought analysis of user pains, friction points, and daily problems that a mobile app could solve. Think out loud about WHO is suffering and WHAT they struggle with on their phones.",
   "search_queries": [
-    "pain-driven query focusing on specific user frustrations",
-    "query about tedious manual tasks in a domain",
-    "query for workflow friction points",
-    "query about what users complain about",
-    "query for validated pain points"
+    "pain-driven query focusing on specific user frustrations on mobile",
+    "query about annoying daily tasks that could be app-ified",
+    "query for mobile app gaps and underserved niches",
+    "query about what users complain about in existing apps",
+    "query for validated pain points from mobile users"
   ],
   "target_sources": [
-    "specific high-quality sources",
-    "communities where target users gather",
-    "platforms showing early adoption signals"
+    "reddit.com/r/apps",
+    "reddit.com/r/androidapps",
+    "reddit.com/r/ios",
+    "producthunt.com",
+    "indiehackers.com",
+    "news.ycombinator.com"
   ],
   "scraping_depth": 1,
   "filters": {
     "exclude_patterns": ["sponsored", "advertisement", "generic"],
     "min_relevance": 0.7,
-    "focus_areas": ["problem validation", "AI necessity", "market timing"]
+    "focus_areas": ["problem validation", "mobile-native solution", "market timing"]
   },
-  "rationale": "Explain how these queries target the learned success criteria"
+  "rationale": "Explain how these queries target mobile app opportunities and the learned success criteria"
 }
 
 Requirements:
-- 4-5 diverse search queries targeting different aspects
-- Focus on finding IDEAS that meet success criteria (not just any AI product)
-- Avoid generic queries like "AI startup ideas"
-- Target sources where REAL users discuss REAL problems
+- Return a single JSON object as the root value (not an array wrapping the object)
+- 4-5 diverse search queries targeting different aspects of mobile user pain
+- Focus on finding MOBILE APP IDEAS (not web SaaS or desktop software)
+- Avoid generic queries like "app startup ideas"
+- Target sources where REAL mobile users discuss REAL problems
 - Consider what worked/failed in previous iterations
 - THINK FIRST about user pains before generating queries
 
 Output ONLY valid JSON, no markdown formatting."""
         
         return prompt
-    
+
+    def _coerce_plan_to_dict(self, result: Any) -> dict[str, Any]:
+        """LLMs sometimes return a JSON array (e.g. one plan in a list, or only queries). Normalize to a dict."""
+        if isinstance(result, dict):
+            return result
+        if isinstance(result, list):
+            if not result:
+                raise ValueError("LLM returned an empty JSON array instead of a plan object")
+            for item in result:
+                if isinstance(item, dict) and (
+                    item.get("search_queries")
+                    or "thinking" in item
+                    or "target_sources" in item
+                ):
+                    return item
+            for item in result:
+                if isinstance(item, dict):
+                    return item
+            if all(isinstance(x, str) for x in result):
+                self.logger.warning(
+                    "LLM returned a JSON array of strings; treating as search_queries only"
+                )
+                return {
+                    "thinking": "",
+                    "search_queries": list(result),
+                    "target_sources": [
+                        "reddit.com",
+                        "news.ycombinator.com",
+                        "producthunt.com",
+                    ],
+                    "scraping_depth": 1,
+                    "filters": {},
+                }
+            raise ValueError(
+                f"LLM returned a JSON array that is not a valid plan: {repr(result)[:500]}"
+            )
+        raise ValueError(
+            f"LLM returned {type(result).__name__}, expected a JSON object with search_queries"
+        )
+
     def _validate_plan(self, plan: dict[str, Any]) -> dict[str, Any]:
         """Validate and normalize the generated plan."""
         # Extract thinking field (required for pain-driven CoT reasoning)

@@ -1,45 +1,56 @@
 #!/usr/bin/env python3
 import asyncio
+import os
 import sys
+import httpx
+from pathlib import Path
+
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 
-async def test_llm():
-    print("Testing LLM server connection...")
+async def test_llm() -> bool:
+    print("Testing OpenCode HTTP API (opencode-ai)...")
     print("=" * 50)
 
     try:
-        from agents.llm_client import OpenCodeLLMClient
-
-        client = OpenCodeLLMClient(
-            system_prompt="You are a helpful assistant. Be concise.",
-        )
-
         print("1. Initializing client... OK")
 
         print("\n2. Testing text completion...")
-        response = await client.complete(
-            "What is 2+2? Answer with just the number.",
-            max_retries=0,
-        )
-        print(f"   Response: '{response}'")
-
-        if "4" in response:
-            print("   OK Text completion working")
-        else:
-            print("   FAIL Unexpected response (expected '4')")
-            return False
-
-        await client.disconnect()
-        print("\n3. Disconnecting... OK")
-
-        print("\n" + "=" * 50)
-        print("All tests passed! LLM server is working correctly.")
-        return True
+        
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post("http://localhost:54321/session", json={})
+            sid = resp.json()["id"]
+            
+            await client.post(f"http://localhost:54321/session/{sid}/message", json={
+                "parts": [{"type": "text", "text": "What is 2+2? Answer with just the number."}],
+                "model": {"providerID": "opencode", "modelID": "minimax-m2.5-free"}
+            })
+            
+            for _ in range(30):
+                await asyncio.sleep(2)
+                resp = await client.get(f"http://localhost:54321/session/{sid}/message")
+                msgs = resp.json()
+                for m in msgs:
+                    if m.get("info", {}).get("role") == "assistant":
+                        for part in m.get("parts", []):
+                            if part.get("type") == "text":
+                                text = part.get("text", "")
+                                print(f"   Response: {text!r}")
+                                if "4" in text:
+                                    print("   OK Text completion working")
+                                    print("\n3. Closing... OK")
+                                    print("\n" + "=" * 50)
+                                    print("All tests passed! OpenCode HTTP client is working.")
+                                    return True
+                print(f"  Waiting... ({len(msgs)} messages)")
+        
+        print("   FAIL No assistant response")
+        return False
 
     except Exception as e:
         print(f"\nError: {type(e).__name__}: {e}")
         import traceback
-
         traceback.print_exc()
         return False
 

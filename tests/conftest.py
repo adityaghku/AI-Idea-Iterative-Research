@@ -40,6 +40,10 @@ from tests.fixtures.llm_fixtures import (  # noqa: F401
     invalid_idea_response,
     empty_idea_response,
     partial_score_idea_response,
+    extract_single_candidate,
+    extract_two_candidates,
+    extract_twenty_candidates,
+    extract_partial_candidate,
 )
 from agents.cache import ResponseCache
 

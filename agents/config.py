@@ -13,7 +13,6 @@ class Stage(str, Enum):
     SCRAPER = "scraper"
     EVALUATOR = "evaluator"
     CRITIC = "critic"
-    TAGGER = "tagger"
     LEARNER = "learner"
     FINALIZE = "finalize"
 
@@ -34,7 +33,7 @@ class MessageStatus(str, Enum):
 
 
 # Constants
-DEFAULT_SCRAPER_COOLDOWN_SECONDS = 300  # 5 minutes
+DEFAULT_SCRAPER_COOLDOWN_SECONDS = 120  # 2 minutes
 DEFAULT_MAX_ITERATIONS = 5
 DEFAULT_PLATEAU_WINDOW = 2
 DEFAULT_MIN_IMPROVEMENT = 0.0
@@ -185,33 +184,11 @@ class EvaluatorOutput:
 
 
 @dataclass
-class TaggerInput:
-    """Input for Tagger agent."""
-    ideas: list[dict[str, Any]]
-    categories: list[str]
-
-
-@dataclass
-class TaggerOutput:
-    """Output from Tagger agent."""
-    thinking: str = ""
-    tagged_ideas: list[dict[str, Any]] = field(default_factory=list)
-    tag_counts: dict[str, int] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "thinking": self.thinking,
-            "tagged_ideas": self.tagged_ideas,
-            "tag_counts": self.tag_counts,
-        }
-
-
-@dataclass
 class LearnerInput:
     """Input for Learner agent."""
     run_task_id: str
     iteration_number: int
-    ideas: list[Idea]
+    ideas: list[Idea] | list[dict[str, Any]]
     avg_score: float
 
 
@@ -245,7 +222,7 @@ class CriticInput:
     """Input for Critic agent."""
     run_task_id: str
     iteration_number: int
-    ideas: list[Idea]
+    ideas: list[Idea] | list[dict[str, Any]]
 
 
 @dataclass

@@ -111,6 +111,7 @@ class TestExtractIdeasValid:
         mock_llm_json: AsyncMock,
         mock_criteria: dict[str, Any],
         sample_content_item: dict[str, Any],
+        extract_single_candidate: list[dict[str, Any]],
         valid_idea_response: list[dict[str, Any]],
     ) -> None:
         """Test _extract_ideas returns a single idea from valid LLM response."""
@@ -118,7 +119,7 @@ class TestExtractIdeasValid:
         mock_meta_instance = MagicMock()
         mock_meta_instance.research_startup_criteria.return_value = mock_criteria
         mock_meta_class.return_value = mock_meta_instance
-        mock_llm_json.return_value = valid_idea_response
+        mock_llm_json.side_effect = [extract_single_candidate, valid_idea_response]
 
         # Execute
         evaluator = EvaluatorAgent(db_path=":memory:")
@@ -145,6 +146,7 @@ class TestExtractIdeasValid:
         mock_llm_json: AsyncMock,
         mock_criteria: dict[str, Any],
         sample_content_item: dict[str, Any],
+        extract_two_candidates: list[dict[str, Any]],
         multiple_ideas_response: list[dict[str, Any]],
     ) -> None:
         """Test _extract_ideas returns multiple ideas from valid LLM response."""
@@ -152,7 +154,7 @@ class TestExtractIdeasValid:
         mock_meta_instance = MagicMock()
         mock_meta_instance.research_startup_criteria.return_value = mock_criteria
         mock_meta_class.return_value = mock_meta_instance
-        mock_llm_json.return_value = multiple_ideas_response
+        mock_llm_json.side_effect = [extract_two_candidates, multiple_ideas_response]
 
         # Execute
         evaluator = EvaluatorAgent(db_path=":memory:")
@@ -176,6 +178,7 @@ class TestExtractIdeasValid:
         mock_meta_class: MagicMock,
         mock_llm_json: AsyncMock,
         mock_criteria: dict[str, Any],
+        extract_single_candidate: list[dict[str, Any]],
         valid_idea_response: list[dict[str, Any]],
     ) -> None:
         """Test _extract_ideas correctly assigns source URL to ideas."""
@@ -183,7 +186,7 @@ class TestExtractIdeasValid:
         mock_meta_instance = MagicMock()
         mock_meta_instance.research_startup_criteria.return_value = mock_criteria
         mock_meta_class.return_value = mock_meta_instance
-        mock_llm_json.return_value = valid_idea_response
+        mock_llm_json.side_effect = [extract_single_candidate, valid_idea_response]
 
         # Execute with custom URL
         content_item = {
@@ -216,6 +219,7 @@ class TestScoreCalculationAndRanking:
         mock_meta_class: MagicMock,
         mock_llm_json: AsyncMock,
         mock_criteria: dict[str, Any],
+        extract_two_candidates: list[dict[str, Any]],
         multiple_ideas_response: list[dict[str, Any]],
     ) -> None:
         """Test evaluate() returns ideas in score order (highest first)."""
@@ -223,7 +227,7 @@ class TestScoreCalculationAndRanking:
         mock_meta_instance = MagicMock()
         mock_meta_instance.research_startup_criteria.return_value = mock_criteria
         mock_meta_class.return_value = mock_meta_instance
-        mock_llm_json.return_value = multiple_ideas_response
+        mock_llm_json.side_effect = [extract_two_candidates, multiple_ideas_response]
 
         # Execute
         content_item = {
@@ -249,6 +253,7 @@ class TestScoreCalculationAndRanking:
         mock_meta_class: MagicMock,
         mock_llm_json: AsyncMock,
         mock_criteria: dict[str, Any],
+        extract_single_candidate: list[dict[str, Any]],
         valid_idea_response: list[dict[str, Any]],
         low_score_idea_response: list[dict[str, Any]],
     ) -> None:
@@ -257,8 +262,13 @@ class TestScoreCalculationAndRanking:
         mock_meta_instance = MagicMock()
         mock_meta_instance.research_startup_criteria.return_value = mock_criteria
         mock_meta_class.return_value = mock_meta_instance
-        # Return high score idea first, then low score
-        mock_llm_json.side_effect = [valid_idea_response, low_score_idea_response]
+        # Per content item: extract then evaluate (sequential semaphore order).
+        mock_llm_json.side_effect = [
+            extract_single_candidate,
+            valid_idea_response,
+            extract_single_candidate,
+            low_score_idea_response,
+        ]
 
         # Execute
         content_items = [
@@ -308,13 +318,14 @@ class TestScoreCalculationAndRanking:
         mock_meta_class: MagicMock,
         mock_llm_json: AsyncMock,
         mock_criteria: dict[str, Any],
+        extract_twenty_candidates: list[dict[str, Any]],
     ) -> None:
         """Test evaluate() limits output to max 15 ideas."""
         # Setup mocks
         mock_meta_instance = MagicMock()
         mock_meta_instance.research_startup_criteria.return_value = mock_criteria
         mock_meta_class.return_value = mock_meta_instance
-        
+
         # Create 20 ideas
         many_ideas = [
             {
@@ -339,7 +350,7 @@ class TestScoreCalculationAndRanking:
             }
             for i in range(20)
         ]
-        mock_llm_json.return_value = many_ideas
+        mock_llm_json.side_effect = [extract_twenty_candidates, many_ideas]
 
         # Execute
         content_item = {
@@ -514,6 +525,7 @@ class TestMalformedResponseHandling:
         mock_llm_json: AsyncMock,
         mock_criteria: dict[str, Any],
         sample_content_item: dict[str, Any],
+        extract_partial_candidate: list[dict[str, Any]],
         partial_score_idea_response: list[dict[str, Any]],
     ) -> None:
         """Test _extract_ideas handles ideas with missing score fields."""
@@ -521,7 +533,7 @@ class TestMalformedResponseHandling:
         mock_meta_instance = MagicMock()
         mock_meta_instance.research_startup_criteria.return_value = mock_criteria
         mock_meta_class.return_value = mock_meta_instance
-        mock_llm_json.return_value = partial_score_idea_response
+        mock_llm_json.side_effect = [extract_partial_candidate, partial_score_idea_response]
 
         # Execute
         evaluator = EvaluatorAgent(db_path=":memory:")
@@ -547,28 +559,33 @@ class TestMalformedResponseHandling:
         mock_llm_json: AsyncMock,
         mock_criteria: dict[str, Any],
         sample_content_item: dict[str, Any],
+        extract_single_candidate: list[dict[str, Any]],
     ) -> None:
         """Test _extract_ideas handles ideas with missing title field."""
         # Setup mocks
         mock_meta_instance = MagicMock()
         mock_meta_instance.research_startup_criteria.return_value = mock_criteria
         mock_meta_class.return_value = mock_meta_instance
-        
-        # Idea missing title
-        mock_llm_json.return_value = [
-            {
-                "idea_summary": "An idea without a title",
-                "detailed_scores": {
-                    "ai_advantage": 70,
-                    "solo_founder_feasibility": 70,
-                    "monetization_clarity": 70,
-                },
-                "total_score": 70,
-                "verdict": "Promising",
-                "strengths": [],
-                "risks": [],
-                "advice": "Test",
-            }
+
+        # Evaluate phase returns idea missing title
+        mock_llm_json.side_effect = [
+            extract_single_candidate,
+            [
+                {
+                    "idea_summary": "An idea without a title",
+                    "detailed_scores": {
+                        "ai_advantage": 70,
+                        "solo_founder_feasibility": 70,
+                        "monetization_clarity": 70,
+                    },
+                    "total_score": 70,
+                    "verdict": "Promising",
+                    "strengths": [],
+                    "risks": [],
+                    "advice": "Test",
+                    "citations": ["code"],
+                }
+            ],
         ]
 
         # Execute
@@ -590,16 +607,12 @@ class TestMalformedResponseHandling:
         mock_meta_class: MagicMock,
         mock_llm_json: AsyncMock,
         mock_criteria: dict[str, Any],
-        valid_idea_response: list[dict[str, Any]],
     ) -> None:
         mock_meta_instance = MagicMock()
         mock_meta_instance.research_startup_criteria.return_value = mock_criteria
         mock_meta_class.return_value = mock_meta_instance
-        
-        mock_llm_json.side_effect = [
-            Exception("LLM error"),
-            valid_idea_response,
-        ]
+
+        mock_llm_json.side_effect = Exception("LLM error")
 
         content_items = [
             {"url": "https://example.com/fail", "content": {"text": "This content will fail during processing due to simulated LLM error conditions in the test environment. The AI startup idea discusses innovative product solutions for enterprise customers and business applications."}},
@@ -657,20 +670,12 @@ class TestTimeoutAndErrorHandling:
         mock_meta_class: MagicMock,
         mock_llm_json: AsyncMock,
         mock_criteria: dict[str, Any],
-        valid_idea_response: list[dict[str, Any]],
     ) -> None:
         mock_meta_instance = MagicMock()
         mock_meta_instance.research_startup_criteria.return_value = mock_criteria
         mock_meta_class.return_value = mock_meta_instance
-        
-        call_count = [0]
-        async def side_effect(*args, **kwargs):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                raise RuntimeError("LLM connection failed")
-            return valid_idea_response
-        
-        mock_llm_json.side_effect = side_effect
+
+        mock_llm_json.side_effect = RuntimeError("LLM connection failed")
 
         content_items = [
             {"url": "https://example.com/1", "content": {"text": "First content item about AI startup ideas that will encounter processing errors during the evaluation phase. The innovative product concept discusses machine learning applications for business solutions and enterprise customers."}},
@@ -728,6 +733,7 @@ class TestEvaluatorOutput:
         mock_meta_class: MagicMock,
         mock_llm_json: AsyncMock,
         mock_criteria: dict[str, Any],
+        extract_single_candidate: list[dict[str, Any]],
         valid_idea_response: list[dict[str, Any]],
     ) -> None:
         """Test EvaluatorOutput has correct structure."""
@@ -735,7 +741,7 @@ class TestEvaluatorOutput:
         mock_meta_instance = MagicMock()
         mock_meta_instance.research_startup_criteria.return_value = mock_criteria
         mock_meta_class.return_value = mock_meta_instance
-        mock_llm_json.return_value = valid_idea_response
+        mock_llm_json.side_effect = [extract_single_candidate, valid_idea_response]
 
         # Execute
         content_item = {
@@ -882,8 +888,22 @@ class TestBuildCriteriaPrompt:
         }
         
         prompt = evaluator._build_criteria_prompt(criteria)
-        
-        # Should limit to 6 success factors
-        assert prompt.count("TestFactor") <= 6
-        # Should limit to 4 failure patterns
-        assert prompt.count("TestPattern") <= 4
+
+        assert prompt.count("TestFactor") <= 8
+        assert prompt.count("TestPattern") <= 6
+
+    def test_build_criteria_prompt_includes_market_insights(self) -> None:
+        evaluator = EvaluatorAgent(db_path=":memory:")
+        criteria = {
+            "success_factors": [],
+            "failure_patterns": [],
+            "market_insights": {
+                "hot_sectors_2024": ["Sector A", "Sector B"],
+                "note": "Markets shift quickly",
+            },
+        }
+        prompt = evaluator._build_criteria_prompt(criteria)
+        assert "MARKET INSIGHTS" in prompt
+        assert "hot_sectors_2024" in prompt
+        assert "Sector A" in prompt
+        assert "note" in prompt

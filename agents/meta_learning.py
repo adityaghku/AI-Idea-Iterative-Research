@@ -15,29 +15,29 @@ class MetaLearningAgent:
 
         factors = [
             {"factor": "Problem Clarity", "importance": "critical",
-             "description": "Clear articulation of problem being solved",
-             "indicators": ["Problem is well-defined", "Users have pain point"]},
-            {"factor": "AI Advantage", "importance": "critical",
-             "description": "Problem genuinely requires AI to solve",
-             "indicators": ["Needs pattern recognition", "Scale requires automation"]},
+             "description": "Clear articulation of mobile user problem being solved",
+             "indicators": ["Problem is well-defined for mobile context", "Users have real pain point"]},
+            {"factor": "Mobile-Native Advantage", "importance": "critical",
+             "description": "App leverages mobile-specific features or context",
+             "indicators": ["Uses camera, GPS, sensors, or offline", "On-the-go use case", "Mobile is the best form factor"]},
             {"factor": "Market Timing", "importance": "high",
-             "description": "Right time in market",
-             "indicators": ["Infrastructure ready", "Growing awareness"]},
+             "description": "Right time for this mobile solution",
+             "indicators": ["App store category growing", " underserved niche", "Platform features enable it"]},
             {"factor": "Solo Founder Feasible", "importance": "high",
-             "description": "Can be built by one person",
-             "indicators": ["Manageable scope", "Uses existing APIs"]},
+             "description": "Can be built and launched by one person",
+             "indicators": ["Manageable scope for solo dev", "Can launch MVP quickly", "No enterprise sales needed"]},
             {"factor": "Distribution Path", "importance": "high",
-             "description": "Clear way to reach customers",
-             "indicators": ["Clear channels", "Platform leverage"]},
+             "description": "Clear way to reach mobile users",
+             "indicators": ["App Store/Play Store optimization", "Social viral potential", "Influencer marketing"]},
             {"factor": "Monetization", "importance": "medium",
-             "description": "Clear path to revenue",
-             "indicators": ["Users will pay", "Clear pricing model"]},
+             "description": "Clear mobile monetization model",
+             "indicators": ["Freemium model viable", "Subscription potential", "In-app purchases make sense"]},
             {"factor": "Defensibility", "importance": "medium",
              "description": "Sustainable competitive advantage",
-             "indicators": ["Network effects", "Data moat"]},
+             "indicators": ["Network effects", "Data moat", "Community lock-in"]},
             {"factor": "Technical Feasible", "importance": "high",
-             "description": "Can be built with current tech",
-             "indicators": ["Current AI capable", "No research needed"]},
+             "description": "Can be built with current mobile tech",
+             "indicators": ["React Native/Flutter/Swift capable", "No backend complexity", "Uses existing APIs/SDKs"]},
         ]
 
         for f in factors:
@@ -48,34 +48,38 @@ class MetaLearningAgent:
     def _get_failure_patterns(self) -> list[dict[str, Any]]:
         return [
             {"pattern": "Solution Looking for Problem", "red_flag_level": "critical",
-             "description": "Building AI without clear use case",
-             "warning_signs": ["Tech-first pitch", "No user pain point"]},
-            {"pattern": "Ignoring Data Needs", "red_flag_level": "high",
-             "description": "Underestimating data requirements",
-             "warning_signs": ["No training data plan", "Underestimating costs"]},
+             "description": "Building an app without clear user pain point",
+             "warning_signs": ["App-first pitch without user need", "No clear user pain point"]},
+            {"pattern": "Not Mobile-Native", "red_flag_level": "high",
+             "description": "Could be a website instead of an app",
+             "warning_signs": ["No mobile-specific features used", "Better as web app", "Desktop-first use case"]},
             {"pattern": "Over-Engineering", "red_flag_level": "medium",
-             "description": "Complex AI when simple works",
-             "warning_signs": ["LLM for simple rules", "Complex architecture"]},
+             "description": "Complex architecture for simple problem",
+             "warning_signs": ["Unnecessary backend complexity", "Too many features for MVP"]},
             {"pattern": "Underestimating Competition", "red_flag_level": "high",
-             "description": "Not acknowledging big tech",
-             "warning_signs": ["Big tech could add this", "No differentiation"]},
-            {"pattern": "Unclear Unit Economics", "red_flag_level": "critical",
-             "description": "AI costs exceed revenue",
-             "warning_signs": ["High AI costs", "No cost optimization"]},
+             "description": "Not acknowledging established apps",
+             "warning_signs": ["Big apps could add this feature", "No clear differentiation", "Red ocean market"]},
+            {"pattern": "Unclear Mobile Monetization", "red_flag_level": "critical",
+             "description": "No viable app store monetization strategy",
+             "warning_signs": ["Unclear how to make money", "No freemium path", "No in-app purchase hooks"]},
         ]
 
     def _get_market_insights(self) -> dict[str, Any]:
         return {
             "hot_sectors_2024": [
-                "AI developer tools",
-                "Vertical AI agents",
-                "AI content creation",
-                "AI automation for SMBs",
+                "Health & wellness apps",
+                "Productivity & focus apps",
+                "Creator tools & content apps",
+                "Financial management apps",
+                "Social & community apps",
+                "Education & learning apps",
             ],
             "saturated_markets": [
-                "Generic chatbots",
-                "Simple writing assistants",
-                "Basic AI image generators",
+                "Generic to-do list apps",
+                "Simple calculator apps",
+                "Basic note-taking apps",
+                "Another fitness tracker",
+                "Weather apps",
             ],
         }
 
@@ -99,16 +103,20 @@ class MetaLearningAgent:
         c = self.research_startup_criteria(run_task_id)
         lines = ["=== EVALUATION CRITERIA ===", ""]
 
-        for i, f in enumerate(c["success_factors"][:5], 1):
-            lines.append(f"{i}. {f['factor']} (Weight: {f['weight']:.0%})")
-            lines.append(f"   {f['description']}")
+        success_factors = c.get("success_factors", [])
+        for i, f in enumerate(success_factors[:5], 1):
+            lines.append(f"{i}. {f.get('factor', 'Unknown')} (Weight: {f.get('weight', 0):.0%})")
+            lines.append(f"   {f.get('description', '')}")
             lines.append("")
 
         lines.extend(["Red Flags:", ""])
-        for p in c["failure_patterns"][:3]:
-            lines.append(f"- {p['pattern']}: {p['description']}")
+        failure_patterns = c.get("failure_patterns", [])
+        for p in failure_patterns[:3]:
+            lines.append(f"- {p.get('pattern', 'Unknown')}: {p.get('description', '')}")
 
-        lines.extend(["", "Hot Sectors:", f"  {', '.join(c['market_insights']['hot_sectors_2024'][:3])}"])
+        market_insights = c.get("market_insights", {})
+        hot_sectors = market_insights.get("hot_sectors_2024", [])
+        lines.extend(["", "Hot Sectors:", f"  {', '.join(hot_sectors[:3])}"])
 
         return "\n".join(lines)
 

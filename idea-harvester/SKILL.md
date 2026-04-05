@@ -8,7 +8,7 @@ description: Iterative AI app idea discovery with a persistent SQLite queue + va
 ## Hard Constraints
 1. **No scraper-generated code** may be written into any directory named `autoresearch` (including `autoresearch-opencode/`).
    - If code/temp files are needed, use `./.idea-harvester-tmp/` at repo root or the sandbox ephemeral workspace.
-2. **Scraper cooldown:** scrape no more frequently than once every ~20 minutes per `run_task_id`.
+2. **Scraper cooldown:** scrape no more frequently than once every ~2 minutes per `run_task_id`.
 3. **No duplicates:**
    - Do not enqueue duplicate URLs (dedup via DB).
    - Do not store duplicate ideas (upsert/merge via DB fingerprints).
@@ -102,7 +102,8 @@ Must include:
 
 ## Final Outputs
 Write:
-- `idea-harvester-top10.json`
-- `idea-harvester-top10.md`
-- `idea-harvester-last-iteration-report.md`
+- `idea-harvester.md` (markdown report with top ideas)
+- `idea-harvester-last-iteration-report.md` (detailed iteration report)
+
+All data is stored in `idea_harvester.sqlite` (primary source of truth).
 

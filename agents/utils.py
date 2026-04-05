@@ -22,19 +22,19 @@ def get_current_epoch() -> int:
 
 def call_db(cmd: str, db_path: str = DEFAULT_DB_PATH, **kwargs) -> Any:
     """Execute idea_harvester_db.py command and return parsed result.
-    
+
     Args:
         cmd: The subcommand to execute
         db_path: Path to the SQLite database
         **kwargs: Additional arguments for the command
-        
+
     Returns:
         Parsed JSON result or None
     """
     script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     db_script = os.path.join(script_dir, "db", "idea_harvester_db.py")
     args = [sys.executable, db_script, cmd, "--db", db_path]
-    
+
     for key, value in kwargs.items():
         if value is None:
             continue
@@ -45,13 +45,13 @@ def call_db(cmd: str, db_path: str = DEFAULT_DB_PATH, **kwargs) -> Any:
         else:
             args.append(arg_key)
             args.append(str(value))
-    
+
     result = None
     try:
         env = os.environ.copy()
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         env["PYTHONPATH"] = project_root + ":" + env.get("PYTHONPATH", "")
-        
+
         result = subprocess.run(
             args,
             capture_output=True,
@@ -78,26 +78,28 @@ def can_scrape(
     cooldown_seconds: int = DEFAULT_SCRAPER_COOLDOWN_SECONDS,
 ) -> tuple[bool, int]:
     """Check if enough time has passed since last scrape.
-    
+
     Args:
         db_path: Path to the database
         run_task_id: The run task ID
         cooldown_seconds: Minimum seconds between scrapes
-        
+
     Returns:
         Tuple of (can_proceed, seconds_until_available)
     """
-    last = call_db("get-kv", db_path, run_task_id=run_task_id, key="scraper_last_completed_epoch")
-    
+    last = call_db(
+        "get-kv", db_path, run_task_id=run_task_id, key="scraper_last_completed_epoch"
+    )
+
     if last is None:
         return True, 0
-    
+
     last_epoch = last.get("epoch", 0)
     elapsed = get_current_epoch() - last_epoch
-    
+
     if elapsed >= cooldown_seconds:
         return True, 0
-    
+
     return False, cooldown_seconds - elapsed
 
 
@@ -117,7 +119,9 @@ def get_knowledge(db_path: str, run_task_id: str, key: str) -> Optional[dict[str
     return call_db("get-kv", db_path, run_task_id=run_task_id, key=key)
 
 
-def set_knowledge(db_path: str, run_task_id: str, key: str, value: dict[str, Any]) -> None:
+def set_knowledge(
+    db_path: str, run_task_id: str, key: str, value: dict[str, Any]
+) -> None:
     """Set a knowledge_kv value."""
     call_db(
         "upsert-kv",
@@ -138,7 +142,7 @@ def create_run(
     model: Optional[str] = None,
 ) -> str:
     """Create a new run in the database.
-    
+
     Returns:
         The task_id
     """
@@ -157,7 +161,12 @@ def create_run(
 
 def ensure_iteration(db_path: str, run_task_id: str, iteration_number: int) -> None:
     """Ensure an iteration row exists."""
-    call_db("ensure-iteration", db_path, run_task_id=run_task_id, iteration_number=iteration_number)
+    call_db(
+        "ensure-iteration",
+        db_path,
+        run_task_id=run_task_id,
+        iteration_number=iteration_number,
+    )
 
 
 def enqueue_message(
@@ -171,7 +180,7 @@ def enqueue_message(
     available_at: Optional[int] = None,
 ) -> int:
     """Enqueue a message for an agent.
-    
+
     Returns:
         The message_id
     """
@@ -282,7 +291,9 @@ def get_iteration_scores(db_path: str, run_task_id: str) -> list[dict[str, Any]]
     return call_db("iteration-scores", db_path, run_task_id=run_task_id) or []
 
 
-def get_top_ideas(db_path: str, run_task_id: str, limit: int = 10) -> list[dict[str, Any]]:
+def get_top_ideas(
+    db_path: str, run_task_id: str, limit: int = 10
+) -> list[dict[str, Any]]:
     """Get top N ideas by score."""
     return call_db("top-ideas", db_path, run_task_id=run_task_id, limit=limit) or []
 
@@ -294,7 +305,7 @@ def filter_new_urls(
     retry_limit: int = 2,
 ) -> dict[str, list[str]]:
     """Filter URLs to only those not yet seen (or failed with attempts < retry_limit).
-    
+
     Returns:
         Dict with 'keep_urls' and 'skipped_urls'
     """
@@ -331,14 +342,17 @@ def list_pending_messages(
     iteration_number: Optional[int] = None,
 ) -> list[dict[str, Any]]:
     """List pending queue messages."""
-    return call_db(
-        "pending-messages",
-        db_path,
-        run_task_id=run_task_id,
-        to_agent=to_agent,
-        stage=stage,
-        iteration_number=iteration_number,
-    ) or []
+    return (
+        call_db(
+            "pending-messages",
+            db_path,
+            run_task_id=run_task_id,
+            to_agent=to_agent,
+            stage=stage,
+            iteration_number=iteration_number,
+        )
+        or []
+    )
 
 
 def store_iteration_complete(
@@ -381,7 +395,6 @@ def record_accumulated_knowledge(
     total_ideas: int,
     unique_ideas: int,
     merged_ideas: int,
-    top_tags: list[dict[str, Any]],
 ) -> int:
     """Record accumulated knowledge stats for cross-run tracking."""
     result = call_db(
@@ -390,7 +403,6 @@ def record_accumulated_knowledge(
         total_ideas=total_ideas,
         unique_ideas=unique_ideas,
         merged_ideas=merged_ideas,
-        top_tags=json.dumps(top_tags),
     )
     if result and isinstance(result, dict):
         return int(result.get("id", 0))
@@ -410,4 +422,4 @@ def get_idea_stats(db_path: str) -> dict[str, Any]:
     result = call_db("get-idea-stats", db_path)
     if result and isinstance(result, dict):
         return result
-    return {"total_ideas": 0, "unique_ideas": 0, "merged_ideas": 0, "top_tags": []}
+    return {"total_ideas": 0, "unique_ideas": 0, "merged_ideas": 0}

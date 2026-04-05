@@ -29,7 +29,6 @@ class ResearcherAgent:
     def __init__(self, db_path: str = "idea_harvester.sqlite", max_concurrent: int = 3):
         self.db_path = db_path
         self.max_concurrent = max_concurrent
-        self._semaphore: asyncio.Semaphore | None = None
         self.logger = get_logger()
         if not DDGS_AVAILABLE:
             raise ImportError(
@@ -45,10 +44,8 @@ class ResearcherAgent:
         if isinstance(search_plan, dict):
             search_plan = PlannerOutput(**search_plan)
 
-        # Initialize semaphore for rate limiting
-        if self._semaphore is None:
-            self._semaphore = asyncio.Semaphore(self.max_concurrent)
-        semaphore = self._semaphore
+        # Create fresh semaphore for this iteration (avoid event loop issues)
+        semaphore = asyncio.Semaphore(self.max_concurrent)
 
         async def search_with_semaphore(query: str) -> tuple[str, list[str] | Exception]:
             """Execute search with semaphore for rate limiting."""

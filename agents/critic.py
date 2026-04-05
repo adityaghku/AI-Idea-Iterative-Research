@@ -117,12 +117,23 @@ Only output valid JSON, no markdown."""
         lines = []
         
         for idx, idea in enumerate(ideas, 1):
-            lines.append(f"\n{idx}. Title: {idea.idea_title}")
-            lines.append(f"   Summary: {idea.idea_summary}")
-            lines.append(f"   Score: {idea.score}")
-            if idea.evaluator_explain:
-                # Include evaluator explanation for context
-                explain_preview = idea.evaluator_explain[:300] + "..." if len(idea.evaluator_explain) > 300 else idea.evaluator_explain
+            # Handle both dict and Idea object
+            if isinstance(idea, dict):
+                title = idea.get("idea_title", "")
+                summary = idea.get("idea_summary", "")
+                score = idea.get("score", 0)
+                explain = idea.get("evaluator_explain", "")
+            else:
+                title = idea.idea_title
+                summary = idea.idea_summary
+                score = idea.score
+                explain = idea.evaluator_explain
+            
+            lines.append(f"\n{idx}. Title: {title}")
+            lines.append(f"   Summary: {summary}")
+            lines.append(f"   Score: {score}")
+            if explain:
+                explain_preview = explain[:300] + "..." if len(explain) > 300 else explain
                 lines.append(f"   Evaluator Notes: {explain_preview}")
 
         return "\n".join(lines)
@@ -142,7 +153,13 @@ Only output valid JSON, no markdown."""
 
         # Validate and clean response
         validated = []
-        original_titles = {idea.idea_title for idea in original_ideas}
+        # Handle both dict and Idea objects
+        original_titles = set()
+        for idea in original_ideas:
+            if isinstance(idea, dict):
+                original_titles.add(idea.get("idea_title", ""))
+            else:
+                original_titles.add(idea.idea_title)
         
         for item in vetted_ideas:
             if not isinstance(item, dict):
@@ -156,9 +173,23 @@ Only output valid JSON, no markdown."""
                 continue
 
             # Find original idea for summary
-            original_idea = next((i for i in original_ideas if i.idea_title == idea_title), None)
-            original_summary = original_idea.idea_summary if original_idea else ""
-            original_score = original_idea.score if original_idea else 0
+            original_idea = None
+            for i in original_ideas:
+                if isinstance(i, dict):
+                    if i.get("idea_title") == idea_title:
+                        original_idea = i
+                        break
+                else:
+                    if i.idea_title == idea_title:
+                        original_idea = i
+                        break
+            
+            if isinstance(original_idea, dict):
+                original_summary = original_idea.get("idea_summary", "")
+                original_score = original_idea.get("score", 0)
+            else:
+                original_summary = original_idea.idea_summary if original_idea else ""
+                original_score = original_idea.score if original_idea else 0
 
             # Validate and clean fields
             failure_modes = item.get("failure_modes", [])
@@ -194,31 +225,54 @@ Only output valid JSON, no markdown."""
         # If we lost ideas during validation, add them back with defaults
         validated_titles = {v["idea_title"] for v in validated}
         for idea in original_ideas:
-            if idea.idea_title not in validated_titles:
-                self.logger.warning(f"Adding missing idea back: {idea.idea_title}")
-                validated.append({
-                    "idea_title": idea.idea_title,
-                    "idea_summary": idea.idea_summary,
-                    "score": idea.score,
-                    "failure_modes": ["Unable to analyze - LLM response incomplete"],
-                    "weak_assumptions": [],
-                    "recommendations": [],
-                    "vetted": True,
-                })
+            title = idea.get("idea_title", "") if isinstance(idea, dict) else idea.idea_title
+            if title not in validated_titles:
+                self.logger.warning(f"Adding missing idea back: {title}")
+                if isinstance(idea, dict):
+                    validated.append({
+                        "idea_title": idea.get("idea_title", ""),
+                        "idea_summary": idea.get("idea_summary", ""),
+                        "score": idea.get("score", 0),
+                        "failure_modes": ["Unable to analyze - LLM response incomplete"],
+                        "weak_assumptions": [],
+                        "recommendations": [],
+                        "vetted": True,
+                    })
+                else:
+                    validated.append({
+                        "idea_title": idea.idea_title,
+                        "idea_summary": idea.idea_summary,
+                        "score": idea.score,
+                        "failure_modes": ["Unable to analyze - LLM response incomplete"],
+                        "weak_assumptions": [],
+                        "recommendations": [],
+                        "vetted": True,
+                    })
 
         return validated
 
     def _create_default_vetted_ideas(self, ideas: list[Idea]) -> list[dict[str, Any]]:
         """Create default vetted ideas when LLM response is invalid."""
-        return [
-            {
-                "idea_title": idea.idea_title,
-                "idea_summary": idea.idea_summary,
-                "score": idea.score,
-                "failure_modes": ["Unable to perform adversarial analysis"],
-                "weak_assumptions": [],
-                "recommendations": [],
-                "vetted": True,
-            }
-            for idea in ideas
-        ]
+        result = []
+        for idea in ideas:
+            if isinstance(idea, dict):
+                result.append({
+                    "idea_title": idea.get("idea_title", ""),
+                    "idea_summary": idea.get("idea_summary", ""),
+                    "score": idea.get("score", 0),
+                    "failure_modes": ["Unable to perform adversarial analysis"],
+                    "weak_assumptions": [],
+                    "recommendations": [],
+                    "vetted": True,
+                })
+            else:
+                result.append({
+                    "idea_title": idea.idea_title,
+                    "idea_summary": idea.idea_summary,
+                    "score": idea.score,
+                    "failure_modes": ["Unable to perform adversarial analysis"],
+                    "weak_assumptions": [],
+                    "recommendations": [],
+                    "vetted": True,
+                })
+        return result

@@ -3,6 +3,51 @@ import pytest
 
 
 @pytest.fixture
+def extract_single_candidate():
+    """Phase-1 extract output matching the scored valid_idea_response."""
+    return [
+        {
+            "idea_title": "AI-Powered Code Review Assistant",
+            "idea_summary": "AI reviews code and suggests improvements using ML.",
+            "supporting_quotes": [
+                "code changes",
+                "machine learning",
+            ],
+        }
+    ]
+
+
+@pytest.fixture
+def extract_two_candidates():
+    """Phase-1 extract output matching multiple_ideas_response."""
+    return [
+        {
+            "idea_title": "AI Meeting Summarizer",
+            "idea_summary": "Summaries and action items from video calls.",
+            "supporting_quotes": ["meeting"],
+        },
+        {
+            "idea_title": "Personalized Nutrition AI",
+            "idea_summary": "Meal planning from health goals.",
+            "supporting_quotes": ["nutrition"],
+        },
+    ]
+
+
+@pytest.fixture
+def extract_twenty_candidates():
+    """Phase-1 extract: 20 minimal candidates for limit tests."""
+    return [
+        {
+            "idea_title": f"Idea {i}",
+            "idea_summary": f"Summary {i}",
+            "supporting_quotes": [f"quote{i}"],
+        }
+        for i in range(20)
+    ]
+
+
+@pytest.fixture
 def valid_idea_response():
     """Return a valid single idea LLM response."""
     return [
@@ -31,7 +76,11 @@ def valid_idea_response():
                 "Need high accuracy to be trusted"
             ],
             "advice": "Focus on specific languages first, then expand",
-            "red_flags": []
+            "red_flags": [],
+            "citations": [
+                "code changes",
+                "machine learning",
+            ],
         }
     ]
 
@@ -58,7 +107,8 @@ def multiple_ideas_response():
             "strengths": ["High demand", "Clear value proposition"],
             "risks": ["Privacy concerns", "Integration complexity"],
             "advice": "Start with specific platforms like Zoom",
-            "red_flags": []
+            "red_flags": [],
+            "citations": ["video calls", "machine learning"],
         },
         {
             "idea_title": "Personalized Nutrition AI",
@@ -127,6 +177,18 @@ def invalid_idea_response():
 def empty_idea_response():
     """Return an empty list response."""
     return []
+
+
+@pytest.fixture
+def extract_partial_candidate():
+    """Extract phase for partial_score_idea_response test."""
+    return [
+        {
+            "idea_title": "Incomplete Scoring Test",
+            "idea_summary": "Test idea with missing scores.",
+            "supporting_quotes": ["test"],
+        }
+    ]
 
 
 @pytest.fixture

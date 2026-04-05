@@ -44,7 +44,8 @@ JSON-only rule:
 - Every stage output must be valid JSON only (no Markdown/code fences/trailing text).
 
 ## Final Outputs
-- `idea-harvester-top10.json`
-- `idea-harvester-top10.md`
-- `idea-harvester-last-iteration-report.md`
+- `idea-harvester.md` (markdown report with top ideas)
+- `idea-harvester-last-iteration-report.md` (detailed iteration report)
+
+All data is stored in `idea_harvester.sqlite` (primary source of truth).
 

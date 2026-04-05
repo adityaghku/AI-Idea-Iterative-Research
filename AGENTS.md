@@ -39,8 +39,7 @@ This repository is set up to run under OpenCode using the `idea-harvester` skill
    - `idea-harvester.md` (session config)
    - `idea_harvester.sqlite` (persistent queue + results DB)
 3. At the end (or on early stop), the agent should write:
-   - `idea-harvester-top10.json`
-   - `idea-harvester-top10.md`
+   - `idea-harvester.md` (markdown report)
 
 ## Configuration
 Configuration is controlled via fields in `idea-harvester.md`:

@@ -13,12 +13,15 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import sqlite3
 import sys
 import time
 from typing import Any, Optional
 from urllib.parse import urlparse, urlunparse
+
+logger = logging.getLogger(__name__)
 
 
 def _utc_epoch_seconds() -> int:
@@ -31,6 +34,40 @@ def _connect(db_path: str) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn
+
+
+def _apply_v6_migrations(conn: sqlite3.Connection) -> None:
+    existing_tables = [
+        x["name"]
+        for x in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    ]
+
+    if "accumulated_knowledge" in existing_tables:
+        columns = [
+            row[1] for row in
+            conn.execute("PRAGMA table_info(accumulated_knowledge)")
+        ]
+        if "top_tags" in columns:
+            conn.execute("ALTER TABLE accumulated_knowledge RENAME TO accumulated_knowledge_old")
+            conn.execute(
+                """
+                CREATE TABLE accumulated_knowledge (
+                  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                  total_ideas     INTEGER NOT NULL,
+                  unique_ideas    INTEGER NOT NULL,
+                  merged_ideas    INTEGER NOT NULL,
+                  recorded_at     INTEGER NOT NULL
+                );
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO accumulated_knowledge (id, total_ideas, unique_ideas, merged_ideas, recorded_at)
+                SELECT id, total_ideas, unique_ideas, merged_ideas, recorded_at
+                FROM accumulated_knowledge_old
+                """
+            )
+            conn.execute("DROP TABLE accumulated_knowledge_old")
 
 
 def init_db(db_path: str) -> None:
@@ -85,11 +122,19 @@ def init_db(db_path: str) -> None:
 
         if version < 2:
             _apply_v2_migrations(conn)
-            set_schema_version(conn, 2, "add tags, idea_tags, idea_merges, canonical columns")
+            set_schema_version(conn, 2, "add idea_fingerprint, canonical_idea_id, idea_merges")
 
         if version < 3:
             _apply_v3_migrations(conn)
             set_schema_version(conn, 3, "add idea_embeddings table for semantic similarity")
+
+        if version < 4:
+            _apply_v4_migrations(conn)
+            set_schema_version(conn, 4, "add accumulated_knowledge table for cross-run stats")
+
+        if version < 6:
+            _apply_v6_migrations(conn)
+            set_schema_version(conn, 6, "remove top_tags from accumulated_knowledge")
 
         conn.commit()
     finally:
@@ -167,39 +212,9 @@ def _apply_v2_migrations(conn: sqlite3.Connection) -> None:
             )
         if not _has_column(conn, "ideas", "merged_at"):
             conn.execute("ALTER TABLE ideas ADD COLUMN merged_at INTEGER;")
-
-    if "tags" not in existing_tables:
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS tags (
-              tag_id           INTEGER PRIMARY KEY AUTOINCREMENT,
-              name             TEXT NOT NULL UNIQUE,
-              slug             TEXT NOT NULL,
-              category         TEXT NOT NULL,
-              usage_count      INTEGER NOT NULL DEFAULT 0,
-              created_at       INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_tags_name ON tags(name);
-            CREATE INDEX IF NOT EXISTS idx_tags_category ON tags(category);
-            """
-        )
-
-    if "idea_tags" not in existing_tables:
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS idea_tags (
-              idea_id     INTEGER NOT NULL,
-              tag_id      INTEGER NOT NULL,
-              source      TEXT NOT NULL DEFAULT 'tagger',
-              created_at  INTEGER NOT NULL,
-              PRIMARY KEY (idea_id, tag_id),
-              FOREIGN KEY (idea_id) REFERENCES ideas(idea_id) ON DELETE CASCADE,
-              FOREIGN KEY (tag_id) REFERENCES tags(tag_id) ON DELETE CASCADE
-            );
-            CREATE INDEX IF NOT EXISTS idx_idea_tags_tag_id ON idea_tags(tag_id);
-            CREATE INDEX IF NOT EXISTS idx_idea_tags_idea_id ON idea_tags(idea_id);
-            """
-        )
+        
+        if not _has_column(conn, "iterations", "critic_output"):
+            conn.execute("ALTER TABLE iterations ADD COLUMN critic_output TEXT;")
 
     if "idea_merges" not in existing_tables:
         conn.executescript(
@@ -246,6 +261,26 @@ def _apply_v3_migrations(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_idea_embeddings_idea_id ON idea_embeddings(idea_id);"
     )
+
+
+def _apply_v4_migrations(conn: sqlite3.Connection) -> None:
+    existing_tables = [
+        x["name"]
+        for x in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    ]
+
+    if "accumulated_knowledge" not in existing_tables:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS accumulated_knowledge (
+              id              INTEGER PRIMARY KEY AUTOINCREMENT,
+              total_ideas     INTEGER NOT NULL,
+              unique_ideas    INTEGER NOT NULL,
+              merged_ideas    INTEGER NOT NULL,
+              recorded_at     INTEGER NOT NULL
+            );
+            """
+        )
 
 
 def _has_table(conn: sqlite3.Connection, table: str) -> bool:
@@ -509,6 +544,7 @@ def store_iteration_output(
         "researcher": "researcher_output",
         "scraper": "scraper_output",
         "evaluator": "evaluator_output",
+        "critic": "critic_output",
         "learner": "learner_output",
     }
     if stage not in stage_to_col:
@@ -712,164 +748,6 @@ def list_pending_messages(
         return out
     finally:
         conn.close()
-
-
-# ─── Tag CRUD ─────────────────────────────────────────────────────────────────
-
-
-def create_tag(conn: sqlite3.Connection, name: str, category: str) -> int:
-    """Create a new tag. Returns tag_id. Raises on duplicate."""
-    now = _utc_epoch_seconds()
-    slug = name.lower().replace(" ", "-")
-    cur = conn.execute(
-        """
-        INSERT INTO tags (name, slug, category, usage_count, created_at)
-        VALUES (?, ?, ?, 0, ?)
-        """,
-        (name, slug, category, now),
-    )
-    return int(cur.lastrowid)
-
-
-def get_or_create_tag(conn: sqlite3.Connection, name: str, category: str) -> int:
-    """Get existing tag or create new. Returns tag_id."""
-    row = conn.execute(
-        "SELECT tag_id FROM tags WHERE name = ?", (name,)
-    ).fetchone()
-    if row is not None:
-        return int(row["tag_id"])
-    return create_tag(conn, name, category)
-
-
-def get_tags_by_idea(conn: sqlite3.Connection, idea_id: int) -> list[dict]:
-    """Get all tags for an idea. Returns list of {id, name, category, source}."""
-    rows = conn.execute(
-        """
-        SELECT t.tag_id AS id, t.name, t.category, it.source
-        FROM tags t
-        JOIN idea_tags it ON t.tag_id = it.tag_id
-        WHERE it.idea_id = ?
-        ORDER BY t.name
-        """,
-        (idea_id,),
-    ).fetchall()
-    return [
-        {"id": int(r["id"]), "name": r["name"], "category": r["category"], "source": r["source"]}
-        for r in rows
-    ]
-
-
-def get_ideas_by_tags(
-    conn: sqlite3.Connection,
-    tag_names: list[str],
-    match_all: bool = False,
-) -> list[dict]:
-    """Get ideas matching tags. If match_all, idea must have ALL tags."""
-    if not tag_names:
-        return []
-
-    placeholders = ",".join("?" * len(tag_names))
-    if match_all:
-        rows = conn.execute(
-            f"""
-            SELECT i.idea_id, i.idea_title, i.score, i.created_at,
-                   GROUP_CONCAT(t.name) AS tag_names
-            FROM ideas i
-            JOIN idea_tags it ON i.idea_id = it.idea_id
-            JOIN tags t ON it.tag_id = t.tag_id
-            WHERE t.name IN ({placeholders})
-            GROUP BY i.idea_id
-            HAVING COUNT(DISTINCT t.tag_id) = ?
-            ORDER BY i.score DESC, i.created_at DESC
-            """,
-            tag_names + [len(tag_names)],
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            f"""
-            SELECT i.idea_id, i.idea_title, i.score, i.created_at,
-                   GROUP_CONCAT(DISTINCT t.name) AS tag_names
-            FROM ideas i
-            JOIN idea_tags it ON i.idea_id = it.idea_id
-            JOIN tags t ON it.tag_id = t.tag_id
-            WHERE t.name IN ({placeholders})
-            GROUP BY i.idea_id
-            ORDER BY i.score DESC, i.created_at DESC
-            """,
-            tag_names,
-        ).fetchall()
-
-    return [
-        {
-            "idea_id": int(r["idea_id"]),
-            "idea_title": r["idea_title"],
-            "score": float(r["score"]) if r["score"] else None,
-            "created_at": int(r["created_at"]),
-            "tag_names": r["tag_names"].split(",") if r["tag_names"] else [],
-        }
-        for r in rows
-    ]
-
-
-def add_tag_to_idea(
-    conn: sqlite3.Connection,
-    idea_id: int,
-    tag_id: int,
-    source: str = "tagger",
-) -> None:
-    """Add tag to idea. Ignores if already exists."""
-    now = _utc_epoch_seconds()
-    conn.execute(
-        """
-        INSERT OR IGNORE INTO idea_tags (idea_id, tag_id, source, created_at)
-        VALUES (?, ?, ?, ?)
-        """,
-        (idea_id, tag_id, source, now),
-    )
-
-
-def increment_tag_usage(conn: sqlite3.Connection, tag_id: int) -> None:
-    """Increment usage_count for a tag."""
-    conn.execute(
-        "UPDATE tags SET usage_count = usage_count + 1 WHERE tag_id = ?",
-        (tag_id,),
-    )
-
-
-def get_all_tags(
-    conn: sqlite3.Connection,
-    category: Optional[str] = None,
-) -> list[dict]:
-    """Get all tags with usage counts. Optionally filter by category."""
-    if category is not None:
-        rows = conn.execute(
-            """
-            SELECT tag_id AS id, name, category, usage_count, created_at
-            FROM tags
-            WHERE category = ?
-            ORDER BY usage_count DESC, name ASC
-            """,
-            (category,),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            """
-            SELECT tag_id AS id, name, category, usage_count, created_at
-            FROM tags
-            ORDER BY usage_count DESC, name ASC
-            """
-        ).fetchall()
-
-    return [
-        {
-            "id": int(r["id"]),
-            "name": r["name"],
-            "category": r["category"],
-            "usage_count": int(r["usage_count"]),
-            "created_at": int(r["created_at"]),
-        }
-        for r in rows
-    ]
 
 
 def get_or_create_embedding(
@@ -1109,6 +987,159 @@ def merge_duplicate_ideas(
     return merge_count
 
 
+def generate_embeddings_for_run(
+    db_path: str,
+    run_task_id: str,
+) -> int:
+    """
+    Generate embeddings for all ideas in a run that don't have embeddings yet.
+
+    Args:
+        db_path: Path to SQLite database
+        run_task_id: Run task ID
+
+    Returns:
+        Number of embeddings generated
+    """
+    conn = _connect(db_path)
+    count = 0
+
+    try:
+        rows = conn.execute(
+            """
+            SELECT i.idea_id, i.source_urls, i.idea_title, i.idea_summary,
+                   i.idea_payload, i.score, i.score_breakdown, i.evaluator_explain
+            FROM ideas i
+            LEFT JOIN idea_embeddings ie ON i.idea_id = ie.idea_id
+            WHERE i.run_task_id = ? AND ie.idea_id IS NULL
+            """,
+            (run_task_id,),
+        ).fetchall()
+
+        for row in rows:
+            idea_id = int(row["idea_id"])
+            idea = {
+                "idea_id": idea_id,
+                "source_urls": json.loads(row["source_urls"]),
+                "idea_title": row["idea_title"],
+                "idea_summary": row["idea_summary"],
+                "idea_payload": json.loads(row["idea_payload"]),
+                "score": float(row["score"]),
+                "score_breakdown": json.loads(row["score_breakdown"]),
+                "evaluator_explain": row["evaluator_explain"],
+            }
+            get_or_create_embedding(conn, idea_id, idea)
+            count += 1
+
+        conn.commit()
+    finally:
+        conn.close()
+
+    return count
+
+
+def record_accumulated_knowledge(
+    db_path: str,
+    total_ideas: int,
+    unique_ideas: int,
+    merged_ideas: int,
+) -> int:
+    """
+    Record accumulated knowledge stats for cross-run tracking.
+
+    Args:
+        db_path: Path to SQLite database
+        total_ideas: Count of all ideas
+        unique_ideas: Count of non-merged ideas
+        merged_ideas: Count of merged ideas
+
+    Returns:
+        ID of the inserted record
+    """
+    conn = _connect(db_path)
+    try:
+        now = _utc_epoch_seconds()
+        cursor = conn.execute(
+            """
+            INSERT INTO accumulated_knowledge
+            (total_ideas, unique_ideas, merged_ideas, recorded_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (total_ideas, unique_ideas, merged_ideas, now),
+        )
+        conn.commit()
+        return int(cursor.lastrowid)
+    finally:
+        conn.close()
+
+
+def get_accumulated_stats(db_path: str) -> dict[str, Any] | None:
+    """
+    Get the latest accumulated knowledge stats.
+
+    Args:
+        db_path: Path to SQLite database
+
+    Returns:
+        Dict with total_ideas, unique_ideas, merged_ideas, recorded_at
+        or None if no records exist.
+    """
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            """
+            SELECT id, total_ideas, unique_ideas, merged_ideas, recorded_at
+            FROM accumulated_knowledge
+            ORDER BY recorded_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+        if row is None:
+            return None
+
+        return {
+            "id": int(row["id"]),
+            "total_ideas": int(row["total_ideas"]),
+            "unique_ideas": int(row["unique_ideas"]),
+            "merged_ideas": int(row["merged_ideas"]),
+            "recorded_at": int(row["recorded_at"]),
+        }
+    finally:
+        conn.close()
+
+
+def get_idea_stats(db_path: str) -> dict[str, Any]:
+    """
+    Get current idea statistics for accumulated knowledge tracking.
+
+    Args:
+        db_path: Path to SQLite database
+
+    Returns:
+        Dict with total_ideas, unique_ideas, merged_ideas
+    """
+    conn = _connect(db_path)
+    try:
+        stats_row = conn.execute(
+            """
+            SELECT
+                COUNT(*) as total_ideas,
+                COUNT(CASE WHEN canonical_idea_id IS NULL THEN 1 END) as unique_ideas,
+                COUNT(CASE WHEN canonical_idea_id IS NOT NULL THEN 1 END) as merged_ideas
+            FROM ideas
+            """
+        ).fetchone()
+
+        return {
+            "total_ideas": int(stats_row["total_ideas"]),
+            "unique_ideas": int(stats_row["unique_ideas"]),
+            "merged_ideas": int(stats_row["merged_ideas"]),
+        }
+    finally:
+        conn.close()
+
+
 def store_ideas(
     db_path: str,
     run_task_id: str,
@@ -1116,7 +1147,7 @@ def store_ideas(
     ideas: list[dict[str, Any]],
 ) -> list[int]:
     """
-    Persist evaluated ideas with tags and return idea IDs.
+    Persist evaluated ideas and return idea IDs.
     Updates iterations.avg_score as the mean of idea scores.
     """
     conn = _connect(db_path)
@@ -1215,34 +1246,7 @@ def store_ideas(
                 idea_id = last_id
             idea_ids.append(idea_id)
 
-            tags = idea.get("tags", [])
-            tag_categories = idea.get("tag_categories", {})
-
-            if tags and isinstance(tags, list):
-                for tag_name in tags:
-                    if not isinstance(tag_name, str) or not tag_name.strip():
-                        continue
-                    tag_name = tag_name.strip()
-                    category = tag_categories.get(tag_name, "industry")
-
-                    tag_id = get_or_create_tag(conn, tag_name, category)
-
-                    # Check if tag is already assigned to this idea
-                    existing_assignment = conn.execute(
-                        """
-                        SELECT 1 FROM idea_tags WHERE idea_id=? AND tag_id=?
-                        """,
-                        (idea_id, tag_id),
-                    ).fetchone()
-
-                    # Link tag to idea (INSERT OR IGNORE handles duplicates)
-                    add_tag_to_idea(conn, idea_id, tag_id, source="tagger")
-
-                    # Only increment usage if this is a new assignment
-                    if existing_assignment is None:
-                        increment_tag_usage(conn, tag_id)
-
-        # Update avg score for iteration.
+# Update avg score for iteration.
         avg_row = conn.execute(
             """
             SELECT AVG(score) AS avg_score
@@ -1305,6 +1309,67 @@ def get_top_ideas(db_path: str, run_task_id: str, limit: int) -> list[dict[str, 
                 }
             )
         return out
+    finally:
+        conn.close()
+
+
+def get_all_ideas(
+    db_path: str, limit: int = 100, offset: int = 0
+) -> list[dict[str, Any]]:
+    """
+    Get all non-merged ideas with pagination support.
+
+    Returns ideas sorted by score DESC.
+    Excludes merged ideas (WHERE canonical_idea_id IS NULL).
+
+    Args:
+        db_path: Path to the SQLite database
+        limit: Maximum number of ideas to return (default 100)
+        offset: Number of ideas to skip (default 0)
+
+    Returns:
+        List of idea dicts with fields: idea_id, run_task_id, idea_title, idea_summary,
+        score, iteration_number, merged_at, created_at
+    """
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+              idea_id,
+              run_task_id,
+              iteration_number,
+              idea_title,
+              idea_summary,
+              score,
+              merged_at,
+              created_at
+            FROM ideas
+            WHERE canonical_idea_id IS NULL
+            ORDER BY score DESC, iteration_number ASC
+            LIMIT ? OFFSET ?
+            """,
+            (int(limit), int(offset)),
+        ).fetchall()
+
+        ideas: list[dict[str, Any]] = []
+        for r in rows:
+            ideas.append(
+                {
+                    "idea_id": int(r["idea_id"]),
+                    "run_task_id": r["run_task_id"],
+                    "iteration_number": int(r["iteration_number"]),
+                    "idea_title": r["idea_title"],
+                    "idea_summary": r["idea_summary"],
+                    "score": float(r["score"]),
+                    "merged_at": int(r["merged_at"]) if r["merged_at"] is not None else None,
+                    "created_at": int(r["created_at"]) if r["created_at"] is not None else None,
+                }
+            )
+        return ideas
+    except sqlite3.Error as e:
+        logger.error(f"Database error in get_all_ideas: {e}")
+        return []
     finally:
         conn.close()
 
@@ -1506,6 +1571,36 @@ def main(argv: list[str]) -> int:
     p_pending.add_argument("--to-agent", default=None)
     p_pending.add_argument("--stage", default=None)
     p_pending.add_argument("--iteration-number", type=int, default=None)
+
+    p_gen_emb = subparsers.add_parser(
+        "generate-embeddings", help="Generate embeddings for all ideas in a run"
+    )
+    p_gen_emb.add_argument("--db", required=True)
+    p_gen_emb.add_argument("--run-task-id", required=True)
+
+    p_merge = subparsers.add_parser(
+        "merge-duplicates", help="Find and merge duplicate ideas"
+    )
+    p_merge.add_argument("--db", required=True)
+    p_merge.add_argument("--threshold", type=float, default=0.95)
+
+    p_rec_acc = subparsers.add_parser(
+        "record-accumulated-knowledge", help="Record accumulated knowledge stats"
+    )
+    p_rec_acc.add_argument("--db", required=True)
+    p_rec_acc.add_argument("--total-ideas", type=int, required=True)
+    p_rec_acc.add_argument("--unique-ideas", type=int, required=True)
+    p_rec_acc.add_argument("--merged-ideas", type=int, required=True)
+
+    p_get_acc = subparsers.add_parser(
+        "get-accumulated-stats", help="Get latest accumulated knowledge stats"
+    )
+    p_get_acc.add_argument("--db", required=True)
+
+    p_idea_stats = subparsers.add_parser(
+        "get-idea-stats", help="Get current idea statistics"
+    )
+    p_idea_stats.add_argument("--db", required=True)
 
     p_now = subparsers.add_parser("now-epoch", help="Get current epoch seconds")
     p_now.add_argument(
@@ -1716,6 +1811,45 @@ def main(argv: list[str]) -> int:
             iteration_number=args.iteration_number,
         )
         print(json.dumps(msgs, ensure_ascii=False))
+        return 0
+
+    if args.cmd == "generate-embeddings":
+        count = generate_embeddings_for_run(
+            db_path=args.db,
+            run_task_id=args.run_task_id,
+        )
+        print(json.dumps({"generated": count}))
+        return 0
+
+    if args.cmd == "merge-duplicates":
+        merge_count = merge_duplicate_ideas(
+            db_path=args.db,
+            threshold=args.threshold,
+        )
+        print(json.dumps({"merged": merge_count}))
+        return 0
+
+    if args.cmd == "record-accumulated-knowledge":
+        record_id = record_accumulated_knowledge(
+            db_path=args.db,
+            total_ideas=args.total_ideas,
+            unique_ideas=args.unique_ideas,
+            merged_ideas=args.merged_ideas,
+        )
+        print(json.dumps({"id": record_id}))
+        return 0
+
+    if args.cmd == "get-accumulated-stats":
+        stats = get_accumulated_stats(db_path=args.db)
+        if stats is None:
+            print("null")
+        else:
+            print(json.dumps(stats, ensure_ascii=False))
+        return 0
+
+    if args.cmd == "get-idea-stats":
+        stats = get_idea_stats(db_path=args.db)
+        print(json.dumps(stats, ensure_ascii=False))
         return 0
 
     raise RuntimeError(f"Unhandled command: {args.cmd}")

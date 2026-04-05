@@ -341,6 +341,76 @@ def test_merge_duplicate_ideas_no_embeddings() -> None:
         os.unlink(db_path)
 
 
+def test_integration_finalize_flow_with_merge() -> None:
+    """
+    Integration test simulating orchestrator's _finalize() flow:
+    1. Create ideas with embeddings
+    2. Generate embeddings (simulated by direct insert)
+    3. Call merge_duplicate_ideas
+    4. Verify merge happened correctly with similarity tracking
+    """
+    db_path = _make_temp_db()
+    try:
+        conn = _connect(db_path)
+
+        # Insert 4 ideas: 2 pairs of similar ideas
+        _insert_idea(conn, 1, "AI Code Assistant", fingerprint="fp-ai-code")
+        _insert_idea(conn, 2, "AI Coding Helper", fingerprint="fp-ai-helper")
+        _insert_idea(conn, 3, "Recipe Organizer App", fingerprint="fp-recipe")
+        _insert_idea(conn, 4, "Recipe Management Tool", fingerprint="fp-recipe-tool")
+
+        # Embeddings: pairs are similar (cosine > 0.95)
+        # Pair 1: Ideas 1 & 2 are similar
+        _insert_embedding(conn, 1, [1.0, 0.0, 0.0, 0.0])
+        _insert_embedding(conn, 2, [0.99, 0.01, 0.0, 0.0])
+        # Pair 2: Ideas 3 & 4 are similar
+        _insert_embedding(conn, 3, [0.0, 0.0, 1.0, 0.0])
+        _insert_embedding(conn, 4, [0.0, 0.0, 0.99, 0.01])
+
+        conn.commit()
+        conn.close()
+
+        # Simulate _finalize() merge step
+        merge_count = merge_duplicate_ideas(db_path, threshold=0.95)
+
+        # Verify: 2 merges should have occurred
+        assert merge_count == 2, f"Expected 2 merges, got {merge_count}"
+
+        conn = _connect(db_path)
+
+        # Verify canonical assignments (lower ID becomes canonical)
+        idea2 = conn.execute(
+            "SELECT canonical_idea_id FROM ideas WHERE idea_id = 2"
+        ).fetchone()
+        assert idea2["canonical_idea_id"] == 1, "Idea 2 should merge into Idea 1"
+
+        idea4 = conn.execute(
+            "SELECT canonical_idea_id FROM ideas WHERE idea_id = 4"
+        ).fetchone()
+        assert idea4["canonical_idea_id"] == 3, "Idea 4 should merge into Idea 3"
+
+        # Verify merge records exist with similarity scores
+        merges = conn.execute(
+            "SELECT source_idea_id, target_idea_id, similarity_score FROM idea_merges ORDER BY source_idea_id"
+        ).fetchall()
+
+        assert len(merges) == 2, f"Expected 2 merge records, got {len(merges)}"
+
+        # Verify merge record for idea 2 -> idea 1
+        assert merges[0]["source_idea_id"] == 2
+        assert merges[0]["target_idea_id"] == 1
+        assert merges[0]["similarity_score"] > 0.95
+
+        # Verify merge record for idea 4 -> idea 3
+        assert merges[1]["source_idea_id"] == 4
+        assert merges[1]["target_idea_id"] == 3
+        assert merges[1]["similarity_score"] > 0.95
+
+        conn.close()
+    finally:
+        os.unlink(db_path)
+
+
 if __name__ == "__main__":
     tests = [
         test_find_similar_ideas_no_embedding,
@@ -358,6 +428,7 @@ if __name__ == "__main__":
         test_merge_duplicate_ideas_skips_already_merged,
         test_merge_duplicate_ideas_multiple_pairs,
         test_merge_duplicate_ideas_no_embeddings,
+        test_integration_finalize_flow_with_merge,
     ]
     for t in tests:
         try:

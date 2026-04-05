@@ -1,13 +1,34 @@
 from __future__ import annotations
 
 import asyncio
+import httpx
 import json
 import logging
 import os
-import tempfile
+import re
+from pathlib import Path
 from typing import Any, Optional
 
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+except ImportError:
+    pass
+
 logger = logging.getLogger(__name__)
+
+
+async def _opencode_session_create(api: Any) -> Any:
+    """Create an OpenCode session.
+
+    ``opencode_ai``'s ``session.create()`` POSTs ``/session`` with no JSON body; the
+    OpenCode server rejects that with 400 ``Malformed JSON in request body``. Sending
+    ``{}`` matches ``curl``/httpx and satisfies the parser (see SDK custom ``post()``).
+    """
+    from opencode_ai.types import Session
+
+    return await api.post("/session", cast_to=Session, body={})
 
 
 def _log_llm_structured(event: str, prompt: str, response: str = "", **kwargs) -> None:
@@ -24,7 +45,70 @@ class LLMError(Exception):
     pass
 
 
+def _extract_json_value(text: str) -> Any | None:
+    """Parse the first JSON object or array in text using JSONDecoder.raw_decode."""
+    decoder = json.JSONDecoder()
+    s = text.strip()
+    for i, ch in enumerate(s):
+        if ch not in "{[":
+            continue
+        try:
+            obj, _ = decoder.raw_decode(s, i)
+            return obj
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+def _resolve_provider_model(model: Optional[str]) -> tuple[str, str]:
+    """Resolve provider_id and model_id for session.chat (SessionChatParams)."""
+    explicit = (model or "").strip()
+    env_combined = os.environ.get("OPENCODE_MODEL", "").strip()
+    chosen = explicit or env_combined
+
+    if chosen:
+        if "/" in chosen:
+            prov, mid = chosen.split("/", 1)
+            return prov.strip(), mid.strip()
+        prov = os.environ.get("OPENCODE_PROVIDER_ID", "opencode").strip()
+        return prov, chosen
+
+    prov = os.environ.get("OPENCODE_PROVIDER_ID", "").strip() or "opencode"
+    mid = os.environ.get("OPENCODE_MODEL_ID", "").strip() or "minimax-m2.5-free"
+    return prov, mid
+
+
+def _auth_headers() -> Optional[dict[str, str]]:
+    key = os.environ.get("OPENCODE_API_KEY", "").strip()
+    if not key:
+        return None
+    return {"Authorization": f"Bearer {key}"}
+
+
+def _concat_text_parts(parts: object) -> str:
+    chunks: list[str] = []
+    for p in parts:
+        t = getattr(p, "type", None)
+        if t == "text":
+            chunks.append(getattr(p, "text", "") or "")
+    return "".join(chunks)
+
+
+def _assistant_text_from_messages(messages: object, assistant_message_id: str) -> str:
+    for item in messages:
+        info = item.info
+        if getattr(info, "id", None) == assistant_message_id:
+            return _concat_text_parts(item.parts)
+    for item in reversed(list(messages)):
+        info = item.info
+        if getattr(info, "role", None) == "assistant":
+            return _concat_text_parts(item.parts)
+    raise LLMError("No assistant text in session messages")
+
+
 class OpenCodeLLMClient:
+    """LLM access via opencode-ai HTTP client (OpenCode server REST API)."""
+
     def __init__(
         self,
         server_url: Optional[str] = None,
@@ -33,75 +117,50 @@ class OpenCodeLLMClient:
     ):
         self.server_url = server_url
         self.system_prompt = system_prompt
+        # cwd kept for API compatibility; REST client does not use a local workspace.
         self.cwd = cwd
-        self._client = None
-        self._connected = False
+        self._api = None
         self._lock = asyncio.Lock()
 
-    def _init_client(self) -> None:
-        if self._client is not None:
-            return
+    def _base_url(self) -> str:
+        return self.server_url or os.environ.get("OPENCODE_BASE_URL", "http://localhost:54321")
 
+    def _make_async_opencode(self):
         try:
-            from opencode_agent_sdk import SDKClient, AgentOptions
-
-            # Use clean temp directory to avoid AGENTS.md injection
-            if self.cwd is None:
-                self.cwd = tempfile.mkdtemp(prefix="opencode_clean_")
-
-            # Empty server_url = subprocess mode, URL = HTTP mode
-            self._client = SDKClient(options=AgentOptions(
-                server_url=self.server_url or "",
-                system_prompt=self.system_prompt or "You are a helpful assistant",
-                cwd=self.cwd,
-            ))
+            import httpx
+            from opencode_ai import AsyncOpencode
         except ImportError as e:
             raise LLMError(
-                f"opencode-agent-sdk not available: {e}. "
-                f"Install with: pip install opencode-agent-sdk"
-            )
+                f"opencode-ai not available: {e}. Install with: pip install opencode-ai"
+            ) from e
 
-    async def _ensure_connected(self) -> None:
+        base_url = self.server_url or os.environ.get("OPENCODE_BASE_URL")
+        headers = _auth_headers()
+        timeout = httpx.Timeout(180.0, connect=30.0)
+        kwargs: dict[str, Any] = {
+            "max_retries": 2,
+            "timeout": timeout,
+        }
+        if base_url:
+            kwargs["base_url"] = base_url
+        if headers:
+            kwargs["default_headers"] = headers
+
+        return AsyncOpencode(**kwargs)
+
+    async def _ensure_api(self) -> None:
         async with self._lock:
-            if not self._connected:
-                self._init_client()
-                if self._client is None:
-                    raise LLMError("Failed to initialize SDK client")
-                await self._client.connect()
-                self._connected = True
+            if self._api is None:
+                logger.info("Initializing opencode-ai AsyncOpencode client...")
+                self._api = self._make_async_opencode()
 
-    async def _get_response_text(self, timeout: float = 60.0) -> str:
-        await self._ensure_connected()
-
-        if self._client is None:
-            raise LLMError("SDK client not initialized")
-
-        text_parts = []
-        start_time = asyncio.get_event_loop().time()
-        assistant_message_count = 0
-
-        try:
-            from opencode_agent_sdk import AssistantMessage, TextBlock
-        except ImportError:
-            raise LLMError("opencode-agent-sdk not available")
-
-        async for message in self._client.receive_response():
-            elapsed = asyncio.get_event_loop().time() - start_time
-            if elapsed > timeout:
-                raise LLMError(f"LLM response timeout after {timeout}s")
-
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        text_parts.append(block.text)
-
-            if hasattr(message, '__class__') and message.__class__.__name__ == 'ResultMessage':
-                break
-
-        if not text_parts:
-            raise LLMError("No text response received from LLM")
-
-        return "".join(text_parts)
+    async def _close_api(self) -> None:
+        if self._api is not None:
+            try:
+                await self._api.close()
+            except Exception as e:
+                logger.warning("Error closing opencode-ai client: %s", e)
+            self._api = None
 
     async def complete(
         self,
@@ -111,43 +170,101 @@ class OpenCodeLLMClient:
         temperature: float = 0.7,
         model: Optional[str] = None,
         max_retries: int = 2,
-        timeout: float = 60.0,
+        timeout: float = 180.0,
     ) -> str:
-        await self._ensure_connected()
+        # max_tokens / temperature: not on session.chat in current opencode-ai; kept for API parity.
+        logger.debug("complete kwargs: max_tokens=%s temperature=%s", max_tokens, temperature)
 
-        client = self._client
-        if client is None:
-            raise LLMError("SDK client not initialized")
+        await self._ensure_api()
+        if self._api is None:
+            raise LLMError("HTTP client not initialized")
 
-        # Prepend system prompt to user prompt since SDK doesn't support dynamic system prompts
         full_prompt = prompt
         if system:
             full_prompt = f"{system}\n\n{prompt}"
+        if self.system_prompt and not system:
+            full_prompt = f"{self.system_prompt}\n\n{full_prompt}"
 
-        last_error = None
+        provider_id, model_id = _resolve_provider_model(model)
+
+        from opencode_ai.types.text_part_input_param import TextPartInputParam
+
+        parts: list[TextPartInputParam] = [{"type": "text", "text": full_prompt}]
+
+        last_error: Exception | None = None
         for attempt in range(max_retries + 1):
+            api = self._api
+            if api is None:
+                raise LLMError("HTTP client not initialized")
             try:
-                # Wrap query with timeout to prevent indefinite hang
-                await asyncio.wait_for(client.query(full_prompt), timeout=timeout)
-                return await self._get_response_text(timeout=timeout)
+                logger.info(
+                    "OpenCode chat (attempt %s, timeout=%ss, provider=%s, model=%s)...",
+                    attempt + 1,
+                    timeout,
+                    provider_id,
+                    model_id,
+                )
+
+                # Create session
+                async with httpx.AsyncClient(timeout=timeout) as http_client:
+                    base_url = self._base_url()
+                    
+                    # Create session
+                    resp = await http_client.post(f"{base_url}/session", json={})
+                    resp.raise_for_status()
+                    sid = resp.json()["id"]
+                    
+                    # Send message
+                    await http_client.post(
+                        f"{base_url}/session/{sid}/message",
+                        json={
+                            "parts": parts,
+                            "model": {"providerID": provider_id, "modelID": model_id}
+                        }
+                    )
+                    
+                    # Poll for response
+                    text = ""
+                    for _ in range(int(timeout / 2)):
+                        await asyncio.sleep(2)
+                        resp = await http_client.get(f"{base_url}/session/{sid}/message")
+                        resp.raise_for_status()
+                        msgs = resp.json()
+                        for m in msgs:
+                            if m.get("info", {}).get("role") == "assistant":
+                                for p in m.get("parts", []):
+                                    if p.get("type") == "text":
+                                        text += p.get("text", "")
+                                break
+                        if text:
+                            break
+
+                try:
+                    await api.session.delete(sid)
+                except Exception as e:
+                    logger.debug("session.delete failed (non-fatal): %s", e)
+
+                if not text.strip():
+                    raise LLMError("Empty assistant text from OpenCode server")
+
+                return text
 
             except Exception as e:
-                last_error = e
-                logger.warning(f"LLM query failed (attempt {attempt + 1}): {type(e).__name__}: {e}")
+                if isinstance(e, LLMError):
+                    last_error = e
+                else:
+                    last_error = LLMError(f"{type(e).__name__}: {e}")
+                logger.warning("LLM chat failed (attempt %s): %s", attempt + 1, last_error)
                 if attempt < max_retries:
                     await asyncio.sleep(1 * (attempt + 1))
-                    try:
-                        await client.disconnect()
-                    except Exception as e:
-                        logger.warning(f"Error disconnecting during retry: {e}")
-                    self._connected = False
-                    await self._ensure_connected()
-                    client = self._client
-                    if client is None:
-                        raise LLMError("SDK client not initialized after reconnect")
+                    async with self._lock:
+                        await self._close_api()
+                        self._api = self._make_async_opencode()
                 continue
 
-        raise LLMError(f"LLM call failed after {max_retries + 1} attempts: {last_error}")
+        raise LLMError(
+            f"LLM call failed after {max_retries + 1} attempts: {last_error}"
+        )
 
     async def complete_json(
         self,
@@ -158,69 +275,109 @@ class OpenCodeLLMClient:
         model: Optional[str] = None,
         max_retries: int = 3,
     ) -> Any:
-        # Strong JSON enforcement - prepend to ensure JSON output
-        json_prefix = "You must respond with ONLY valid JSON. No markdown, no explanations, no conversational text.\n\n"
-        
-        json_system = (system or "") + "\n\nCRITICAL: Respond with ONLY valid JSON. No conversational text, no explanations, no markdown. Just raw JSON."
-        
+        logger.info(
+            "=== LLM complete_json START (model=%s, max_tokens=%s, temp=%s) ===",
+            model,
+            max_tokens,
+            temperature,
+        )
+        logger.info("Prompt length: %s chars", len(prompt))
+        logger.info("System: %s...", str(system)[:200] if system else "None")
+
+        json_prefix = (
+            "You must respond with ONLY valid JSON. No markdown, no explanations, "
+            "no conversational text.\n\n"
+        )
+        json_system = (system or "") + (
+            "\n\nCRITICAL: Respond with ONLY valid JSON. No conversational text, "
+            "no explanations, no markdown. Just raw JSON."
+        )
         full_prompt = json_prefix + prompt
+        logger.info("Full prompt length: %s chars", len(full_prompt))
         if "json" not in prompt.lower():
             full_prompt = full_prompt + "\n\nRespond with valid JSON only. No other text."
 
-        last_error = None
         last_response = ""
-        
+
         for attempt in range(max_retries):
             response = await self.complete(
-                full_prompt, json_system, max_tokens, temperature, model, 0
+                full_prompt,
+                json_system,
+                max_tokens,
+                temperature,
+                model,
+                max_retries=2,
             )
             last_response = response
 
-            _log_llm_structured("llm_response_received", prompt=prompt, response=response, attempt=attempt + 1, max_retries=max_retries)
+            _log_llm_structured(
+                "llm_response_received",
+                prompt=prompt,
+                response=response,
+                attempt=attempt + 1,
+                max_retries=max_retries,
+            )
 
             try:
-                return json.loads(response)
+                result = json.loads(response)
+                logger.info("=== LLM complete_json SUCCESS ===")
+                return result
             except json.JSONDecodeError:
-                import re
+                logger.warning("JSON parse failed, trying raw_decode / fenced extraction...")
+                extracted = _extract_json_value(response)
+                if extracted is not None:
+                    logger.info("=== LLM complete_json SUCCESS (raw_decode) ===")
+                    return extracted
 
                 json_match = re.search(
-                    r'```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```',
+                    r"```(?:json)?\s*(\{[\s\S]*\}|\[[\s\S]*\])\s*```",
                     response,
-                    re.DOTALL
                 )
                 if json_match:
                     try:
                         return json.loads(json_match.group(1))
                     except json.JSONDecodeError:
-                        pass
+                        extracted = _extract_json_value(json_match.group(1))
+                        if extracted is not None:
+                            logger.info(
+                                "=== LLM complete_json SUCCESS (fence+raw_decode) ==="
+                            )
+                            return extracted
 
-                json_match = re.search(r'(\{.*\}|\[.*\])', response, re.DOTALL)
+                json_match = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", response)
                 if json_match:
                     try:
                         return json.loads(json_match.group(1))
                     except json.JSONDecodeError:
-                        pass
+                        extracted = _extract_json_value(json_match.group(1))
+                        if extracted is not None:
+                            logger.info(
+                                "=== LLM complete_json SUCCESS (bracket+raw_decode) ==="
+                            )
+                            return extracted
 
-                last_error = f"Response: {repr(response[:200])}"
-                _log_llm_structured("llm_json_parse_failed", prompt=prompt, response=response, attempt=attempt + 1, max_retries=max_retries)
-                
+                _log_llm_structured(
+                    "llm_json_parse_failed",
+                    prompt=prompt,
+                    response=response,
+                    attempt=attempt + 1,
+                    max_retries=max_retries,
+                )
+
                 if attempt < max_retries - 1:
                     await asyncio.sleep(0.5 * (attempt + 1))
 
         raise LLMError(
-            f"Could not parse JSON after {max_retries} attempts. Last response: {last_response[:300]}"
+            f"Could not parse JSON after {max_retries} attempts. "
+            f"Last response: {last_response[:300]}"
         )
 
     async def disconnect(self) -> None:
-        if self._connected and self._client:
-            try:
-                await self._client.disconnect()
-            except Exception as e:
-                logger.warning(f"Error during disconnect: {e}")
-            self._connected = False
+        async with self._lock:
+            await self._close_api()
 
     async def __aenter__(self):
-        await self._ensure_connected()
+        await self._ensure_api()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -245,6 +402,28 @@ async def get_llm_client(
         return _llm_client
 
 
+async def _llm_complete_async(
+    prompt: str,
+    system: Optional[str] = None,
+    max_tokens: int = 2000,
+    temperature: float = 0.7,
+    model: Optional[str] = None,
+) -> str:
+    client = await get_llm_client()
+    return await client.complete(prompt, system, max_tokens, temperature, model)
+
+
+async def _llm_complete_json_async(
+    prompt: str,
+    system: Optional[str] = None,
+    max_tokens: int = 2000,
+    temperature: float = 0.7,
+    model: Optional[str] = None,
+) -> Any:
+    client = await get_llm_client()
+    return await client.complete_json(prompt, system, max_tokens, temperature, model)
+
+
 def llm_complete(
     prompt: str,
     system: Optional[str] = None,
@@ -252,8 +431,9 @@ def llm_complete(
     temperature: float = 0.7,
     model: Optional[str] = None,
 ) -> str:
-    client = asyncio.run(get_llm_client())
-    return asyncio.run(client.complete(prompt, system, max_tokens, temperature, model))
+    return asyncio.run(
+        _llm_complete_async(prompt, system, max_tokens, temperature, model)
+    )
 
 
 def llm_complete_json(
@@ -263,8 +443,9 @@ def llm_complete_json(
     temperature: float = 0.7,
     model: Optional[str] = None,
 ) -> Any:
-    client = asyncio.run(get_llm_client())
-    return asyncio.run(client.complete_json(prompt, system, max_tokens, temperature, model))
+    return asyncio.run(
+        _llm_complete_json_async(prompt, system, max_tokens, temperature, model)
+    )
 
 
 async def async_llm_complete_json(
@@ -274,5 +455,10 @@ async def async_llm_complete_json(
     temperature: float = 0.7,
     model: Optional[str] = None,
 ) -> Any:
-    client = await get_llm_client()
-    return await client.complete_json(prompt, system, max_tokens, temperature, model)
+    client = OpenCodeLLMClient()
+    try:
+        return await client.complete_json(
+            prompt, system, max_tokens, temperature, model
+        )
+    finally:
+        await client.disconnect()
