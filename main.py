@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
+"""Main entry point for the 6-agent idea pipeline."""
 from __future__ import annotations
 
 import argparse
-import os
-import subprocess
-import sys
+import asyncio
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent
@@ -16,165 +15,167 @@ try:
 except ImportError:
     pass
 
-from agents import (  # noqa: E402
-    Orchestrator,
-    DEFAULT_MAX_ITERATIONS,
-    DEFAULT_PLATEAU_WINDOW,
-    DEFAULT_MIN_IMPROVEMENT,
-    DEFAULT_DB_PATH,
-    setup_logging,
-)
+from agents.analyser import AnalyserAgent
+from agents.critic import CriticAgent
+from agents.deep_dive import DeepDiveAgent
+from agents.librarian import LibrarianAgent
+from agents.scout import ScoutAgent
+from agents.synthesizer import SynthesizerAgent
+from db import Idea, get_session, init_db, close_db
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
+from utils.logger import get_logger
 
-_DEFAULT_GOAL = """Find innovative mobile app ideas with high market potential that can be started by a solo founder but have room to scale.
-
-Focus on ideas that:
-- Are specifically mobile applications (iOS/Android apps, not web platforms or SaaS)
-- Solve real, painful problems for specific user segments
-- Can be built and launched by one person without significant capital
-- Have clear paths to monetization and customer acquisition (subscriptions, in-app purchases, freemium)
-- Provide genuine value through smart UX, automation, or solving niche problems
-- Target markets that aren't already saturated with similar solutions
-- Leverage mobile-native features (camera, GPS, notifications, sensors, offline capabilities)
-
-Avoid:
-- Generic apps that are just clones of existing successful apps
-- Ideas requiring massive infrastructure or enterprise sales
-- Solutions looking for problems (technology-first approaches)
-- Markets dominated by well-funded incumbents
-- Web-based SaaS tools (not mobile apps)
-"""
+logger = get_logger(__name__)
 
 
-def resolve_goal(args: argparse.Namespace) -> str:
-    """Goal from --goal-file (highest priority), then --goal, else default."""
-    if getattr(args, "goal_file", None) is not None:
-        path = args.goal_file
-        if not path.is_file():
-            raise SystemExit(f"Goal file not found: {path}")
-        text = path.read_text(encoding="utf-8").strip()
-        if not text:
-            raise SystemExit(f"Goal file is empty: {path}")
-        return text
-    if getattr(args, "goal", None):
-        return args.goal.strip()
-    return _DEFAULT_GOAL
+async def run_pipeline(iteration: int):
+    """Run the full 6-agent pipeline."""
+    logger.info("=== Starting Idea Pipeline (iteration %d) ===", iteration)
 
-
-def run_llm_test() -> bool:
-    print("\nRunning LLM connectivity test...")
-    test_script = _ROOT / "test_llm.py"
-    if not test_script.is_file():
-        print(
-            f"\nFatal: missing {test_script} (run from project directory or install test_llm.py)."
-        )
-        return False
-    result = subprocess.run(
-        [sys.executable, str(test_script)],
-        capture_output=True,
-        text=True,
-    )
-    print(result.stdout)
-    if result.stderr:
-        print(result.stderr)
-    return result.returncode == 0
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Idea Harvester - Multi-agent AI idea discovery system for finding innovative AI startup opportunities"
-    )
-    parser.add_argument(
-        "--db",
-        default=DEFAULT_DB_PATH,
-        help=f"Path to SQLite database (default: {DEFAULT_DB_PATH})",
-    )
-    parser.add_argument(
-        "--max-iterations",
-        type=int,
-        default=DEFAULT_MAX_ITERATIONS,
-        help=f"Maximum iterations (default: {DEFAULT_MAX_ITERATIONS})",
-    )
-    parser.add_argument(
-        "--plateau-window",
-        type=int,
-        default=DEFAULT_PLATEAU_WINDOW,
-        help=f"Plateau detection window (default: {DEFAULT_PLATEAU_WINDOW})",
-    )
-    parser.add_argument(
-        "--min-improvement",
-        type=float,
-        default=DEFAULT_MIN_IMPROVEMENT,
-        help=f"Minimum improvement threshold (default: {DEFAULT_MIN_IMPROVEMENT})",
-    )
-    parser.add_argument(
-        "--resume",
-        action="store_true",
-        help="Resume from existing run",
-    )
-    parser.add_argument(
-        "--run-task-id",
-        help="Run task ID (for resume)",
-    )
-    parser.add_argument(
-        "--model",
-        help="Model name for tracking",
-    )
-    parser.add_argument(
-        "--goal",
-        help="Goal text for this run (default: built-in goal)",
-    )
-    parser.add_argument(
-        "--goal-file",
-        type=Path,
-        help="Read goal text from this file (UTF-8); overrides --goal",
-    )
-    parser.add_argument(
-        "--verbose",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Enable verbose logging (default: True, use --no-verbose to disable)",
-    )
-
-    args = parser.parse_args()
-
-    setup_logging(verbose=args.verbose)
-
-    if os.path.exists(".idea-harvester-off"):
-        print("Stop sentinel detected (.idea-harvester-off). Remove it to resume.")
-        sys.exit(0)
-
-    if not run_llm_test():
-        print("\nFatal: LLM test failed")
-        sys.exit(1)
-
-    print("\nLLM test passed. Starting Idea Harvester...")
-
-    goal = resolve_goal(args)
-
-    orchestrator = Orchestrator(
-        db_path=args.db,
-        run_task_id=args.run_task_id,
-        goal=goal,
-        max_iterations=args.max_iterations,
-        plateau_window=args.plateau_window,
-        min_improvement=args.min_improvement,
-        model=args.model,
-    )
+    await init_db()
+    session = await get_session()
 
     try:
-        if args.resume:
-            orchestrator.resume()
-        else:
-            orchestrator.start()
-    except KeyboardInterrupt:
-        print("\nInterrupted by user. Run state saved to database.")
-        print(
-            f"Resume with: python main.py --resume --run-task-id {orchestrator.config.run_task_id}"
+        logger.info("Step 1: Scout - Discovering signals...")
+        scout = ScoutAgent(batch_size=5)
+        signals = await scout.run(session)
+        logger.info("Scout complete: %d signals", len(signals))
+
+        if not signals:
+            logger.warning("No signals found. Exiting.")
+            return
+
+        logger.info("Step 2: Synthesizer - Converting signals to ideas...")
+        synthesizer = SynthesizerAgent()
+        ideas = await synthesizer.run(session, signals)
+        logger.info("Synthesizer complete: %d ideas", len(ideas))
+
+        if not ideas:
+            logger.error("No ideas generated. Pipeline failed.")
+            raise RuntimeError("Synthesizer produced no ideas")
+
+        logger.info("Step 3: Analyser - Scoring ideas...")
+        analyser = AnalyserAgent()
+        analyses = await analyser.run(session, ideas)
+        logger.info("Analyser complete: %d analyses", len(analyses))
+
+        idea_ids = [i.id for i in ideas]
+        current_ideas_stmt = (
+            select(Idea)
+            .where(Idea.id.in_(idea_ids))
+            .options(selectinload(Idea.analysis))
         )
-        sys.exit(0)
-    except Exception as e:
-        print(f"\nError: {e}")
-        raise
+        current_ideas = (await session.execute(current_ideas_stmt)).scalars().all()
+
+        fallback_stmt = (
+            select(Idea)
+            .where(Idea.is_active == True)
+            .options(selectinload(Idea.analysis))
+        )
+        all_active_ideas = (await session.execute(fallback_stmt)).scalars().all()
+        fallback_candidates = sorted(
+            [
+                i
+                for i in all_active_ideas
+                if i.analysis is None or i.analysis.monetization_potential == "unknown"
+            ],
+            key=lambda i: i.id,
+        )
+
+        score_sorted_current = sorted(
+            current_ideas,
+            key=lambda i: i.analysis.score if i.analysis else 0,
+            reverse=True,
+        )
+
+        top_ideas: list[Idea] = []
+        seen_ids: set[int] = set()
+        for candidate in fallback_candidates + score_sorted_current:
+            if candidate.id in seen_ids:
+                continue
+            top_ideas.append(candidate)
+            seen_ids.add(candidate.id)
+            if len(top_ideas) >= 3:
+                break
+        logger.info(
+            "Deep Dive candidate selection: fallback=%d scored=%d selected=%d (%s)",
+            len(fallback_candidates),
+            len(score_sorted_current),
+            len(top_ideas),
+            ", ".join(f"{i.id}:{i.title}" for i in top_ideas),
+        )
+
+        logger.info("Step 4: Deep Dive - Enriching top ideas...")
+        deep_dive = DeepDiveAgent()
+        try:
+            enrichments = await asyncio.wait_for(deep_dive.run(session, top_ideas), timeout=900)
+        except asyncio.TimeoutError:
+            logger.error("Deep Dive timed out after 900s - this step involves web searches which can take time")
+            raise
+        logger.info("Deep Dive complete: %d enrichments", len(enrichments))
+
+        logger.info("Step 5: Critic - Critiquing enriched ideas...")
+        critic = CriticAgent()
+        top_idea_ids = [i.id for i in top_ideas]
+        stmt = select(Idea).where(Idea.id.in_(top_idea_ids)).options(
+            selectinload(Idea.analysis),
+            selectinload(Idea.enrichment)
+        )
+        critic_ideas = (await session.execute(stmt)).scalars().all()
+        logger.info("Critic input ideas prepared: %d", len(critic_ideas))
+        critiques = await critic.run(session, critic_ideas)
+        logger.info("Critic complete: %d critiques", len(critiques))
+
+        logger.info("Step 6: Librarian - Deduplicating...")
+        librarian = LibrarianAgent(threshold=0.7)
+        result = await librarian.run(session)
+        logger.info("Librarian complete: %s", result)
+
+        logger.info("=== Pipeline complete (iteration %d) ===", iteration)
+
+        final_stmt = select(Idea).where(Idea.is_active == True).order_by(Idea.id.desc()).limit(10)
+        final_ideas = (await session.execute(final_stmt)).scalars().all()
+        
+        final_ids = [i.id for i in final_ideas]
+        final_stmt = select(Idea).where(Idea.id.in_(final_ids)).options(selectinload(Idea.analysis))
+        final_ideas = (await session.execute(final_stmt)).scalars().all()
+        
+        logger.info("Top Ideas:")
+        for idea in final_ideas:
+            score = idea.analysis.score if idea.analysis else 0
+            logger.info("  - %s (score: %d)", idea.title, score)
+
+    finally:
+        await session.close()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Run the 6-agent idea pipeline")
+    parser.add_argument(
+        "-n",
+        "--max-iterations",
+        type=int,
+        default=1,
+        help="Maximum number of pipeline iterations to run (default: 1)",
+    )
+    args = parser.parse_args()
+
+    logger.info("Running pipeline with max_iterations=%d", args.max_iterations)
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        for i in range(1, args.max_iterations + 1):
+            loop.run_until_complete(run_pipeline(i))
+            if i < args.max_iterations:
+                logger.info("Sleeping before next iteration...")
+                loop.run_until_complete(asyncio.sleep(2))
+    finally:
+        loop.run_until_complete(close_db())
+        loop.close()
+
+    logger.info("All %d iteration(s) complete!", args.max_iterations)
 
 
 if __name__ == "__main__":

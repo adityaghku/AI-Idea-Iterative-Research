@@ -1,84 +1,74 @@
-# AI Idea Agent
+# AI Idea Iterative Research (Postgres)
 
-A multi-agent AI system that continuously scrapes the internet for innovative application ideas. The agents collaborate to discover, extract, evaluate, and learn from sources, iteratively improving their search strategies.
+Async multi-agent pipeline for generating and evaluating product ideas on top of a
+single Postgres backend.
 
-## Architecture
+## Runtime Architecture
 
-| Agent | Responsibility |
-|-------|----------------|
-| **Orchestrator** | Coordinates workflow, routes messages, manages state |
-| **Planner** | Generates search plans based on goals and learned criteria |
-| **Researcher** | Finds candidate URLs using search APIs |
-| **Scraper** | Extracts structured data from sources |
-| **Evaluator** | Scores ideas using novelty, feasibility, market potential |
-| **Critic** | Adversarial vetting to filter weak ideas |
-| **Learner** | Analyzes results to update heuristics |
+The active runtime is a 6-step async pipeline:
 
-## Workflow
+1. `ScoutAgent` collects problem signals.
+2. `SynthesizerAgent` creates idea candidates with deterministic source-signal links.
+3. `AnalyserAgent` scores ideas and stores assumptions/metadata.
+4. `DeepDiveAgent` adds market/feasibility enrichment.
+5. `CriticAgent` records adversarial concerns.
+6. `LibrarianAgent` performs embedding-based dedupe (`0.95` threshold).
 
-1. **Plan** — Planner creates search queries targeting user pain points
-2. **Research** — Researcher finds relevant URLs
-3. **Scrape** — Scraper extracts text/content (throttled to avoid rate limits)
-4. **Evaluate** — Evaluator scores extracted content as ideas
-5. **Critic** — Adversarial filter removes low-quality ideas
-6. **Learn** — Learner updates knowledge base with validation
-7. **Loop** — Repeats until convergence or max iterations
+## Postgres Data Model
+
+Core entities:
+- `signals`
+- `ideas`
+- `idea_signals` (Idea<->Signal graph edges)
+- `analyses`, `enrichments`, `critiques`
+
+Graph and embedding entities:
+- `idea_embeddings` (pgvector embedding per idea)
+- `idea_relations` (Idea<->Idea edges, e.g. `duplicate_of`, `similar_to`)
+- `signal_relations` (Signal<->Signal edges)
 
 ## Requirements
 
 - Python 3.12+
-- OpenAI API key (or compatible LLM)
+- Docker + Docker Compose (for local Postgres + pgvector)
+- OpenCode server/API for LLM calls (`OPENCODE_BASE_URL`, optional auth)
 
 ## Setup
 
 ```bash
-# Install dependencies
 pip install -r requirements.txt
+docker compose up -d
+```
 
-# Create .env with your API key
-echo "OPENAI_API_KEY=sk-..." > .env
+Example `.env`:
+
+```bash
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/idea_harvester
+DATABASE_URL_SYNC=postgresql+psycopg2://postgres:postgres@localhost:5432/idea_harvester
+OPENCODE_BASE_URL=http://localhost:4096
 ```
 
 ## Usage
 
 ```bash
-# Run with default goal (mobile app ideas for solo founders)
+# Run pipeline once
 python main.py
 
-# Custom goal
-python main.py --goal "Find B2B SaaS ideas for enterprise automation"
-
-# Resume from previous run
-python main.py --resume
-
-# Adjust parameters
-python main.py --max-iterations 10 --plateau-window 3
+# Run pipeline with multiple iterations
+python main.py -n 5
+python main.py --max-iterations 10
 ```
 
-### Command Line Options
+## Dashboard
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--db` | SQLite database path | `idea_harvester.sqlite` |
-| `--max-iterations` | Max iterations before stopping | `5` |
-| `--plateau-window` | Window for plateau detection | `2` |
-| `--min-improvement` | Min score improvement to continue | `0.0` |
-| `--goal` | Goal text for this run | Built-in default |
-| `--goal-file` | Read goal from file | - |
-| `--resume` | Resume from existing run | `false` |
-| `--verbose` | Enable verbose logging | `true` |
-
-## Output
-
-- **Database**: `idea_harvester.sqlite` — stores ideas, scores, runs, messages
-- **Logs**: `logs/harvester_*.log` — execution logs
-
-## Stopping
-
-Create a `.idea-harvester-off` file to gracefully stop after current iteration:
+To visualize results:
 
 ```bash
-touch .idea-harvester-off
+cd dashboard
+pip install -r requirements.txt
+streamlit run app.py
 ```
 
-Resume by removing the file and running with `--resume`.
+## Notes
+
+- `init_db()` creates the pgvector extension and tables automatically.
