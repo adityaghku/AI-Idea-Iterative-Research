@@ -12,7 +12,7 @@ Analyze that specific idea and return exactly one JSON object.
 ## Evaluation Criteria
 
 - **score**: Overall score (0-100)
-- **subscores**: demand, gtm, build_risk, retention (0-100 each)
+- **subscores**: demand, gtm, build_risk, retention, monetization, validation (0-100 each)
 - **monetization_potential**: high | medium | low
 - **complexity**: high | medium | low
 - **tags**: Array of relevant tags (industry, tech, market)
@@ -24,7 +24,7 @@ Analyze that specific idea and return exactly one JSON object.
 ```json
 {
   "score": 75,
-  "subscores": {"demand": 78, "gtm": 70, "build_risk": 62, "retention": 74},
+  "subscores": {"demand": 78, "gtm": 70, "build_risk": 62, "retention": 74, "monetization": 80, "validation": 68},
   "monetization_potential": "high",
   "complexity": "medium",
   "tags": ["healthcare", "mobile-first", "B2C", "..."],
@@ -56,12 +56,16 @@ Analyze that specific idea and return exactly one JSON object.
   - `low`: weak willingness to pay or unclear buyer
   - `medium`: plausible buyer and pricing path with caveats
   - `high`: clear buyer, urgency, and practical pricing model
+- `subscores.monetization`:
+  - higher when buyer, pain, and pricing are explicit and credible
+- `subscores.validation`:
+  - higher when the idea has a clear cheap test or early proof path
 
 ## Output Contract (Strict)
 
 - Return JSON only. Do not include markdown or prose.
 - Return exactly one JSON object (no array).
 - Use exactly these keys: `score`, `monetization_potential`, `complexity`, `tags`, `assumptions`, `comments`.
-- You may additionally include `subscores` with keys `demand`, `gtm`, `build_risk`, `retention`.
+- You may additionally include `subscores` with keys `demand`, `gtm`, `build_risk`, `retention`, `monetization`, `validation`.
 - `score` must be an integer from 0 to 100.
 - `monetization_potential` and `complexity` must be one of `high`, `medium`, `low`.

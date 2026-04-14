@@ -1,4 +1,4 @@
-from agents.embeddings import cosine_similarity, idea_to_text, text_to_embedding
+from utils.embeddings import cosine_similarity, idea_to_text, text_to_embedding
 
 
 def test_identical_idea_embeddings_are_duplicate_level_similar():

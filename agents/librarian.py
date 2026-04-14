@@ -46,7 +46,15 @@ class LibrarianAgent:
                 continue
 
             text = idea_to_text(
-                idea.title, idea.problem, idea.target_user, idea.solution
+                idea.title,
+                idea.problem,
+                idea.target_user,
+                idea.solution,
+                getattr(idea, "monetization_hypothesis", None),
+                getattr(idea, "payer", None),
+                getattr(idea, "pricing_model", None),
+                getattr(idea, "wedge", None),
+                getattr(idea, "why_now", None),
             )
             vector = text_to_embedding(text)
             session.add(
@@ -146,12 +154,22 @@ Idea A (ID: {s.id}):
 - Problem: {s.problem}
 - Target User: {s.target_user}
 - Solution: {s.solution}
+- Monetization Hypothesis: {getattr(s, 'monetization_hypothesis', None)}
+- Payer: {getattr(s, 'payer', None)}
+- Pricing Model: {getattr(s, 'pricing_model', None)}
+- Wedge: {getattr(s, 'wedge', None)}
+- Why Now: {getattr(s, 'why_now', None)}
 
 Idea B (ID: {t.id}):
 - Title: {t.title}
 - Problem: {t.problem}
 - Target User: {t.target_user}
 - Solution: {t.solution}
+- Monetization Hypothesis: {getattr(t, 'monetization_hypothesis', None)}
+- Payer: {getattr(t, 'payer', None)}
+- Pricing Model: {getattr(t, 'pricing_model', None)}
+- Wedge: {getattr(t, 'wedge', None)}
+- Why Now: {getattr(t, 'why_now', None)}
 """)
 
         prompt = f"""{prompt_template}
@@ -175,7 +193,17 @@ Output your decisions as a JSON array with one entry per pair.
 
     async def _refresh_embedding(self, session: AsyncSession, idea: Idea) -> None:
         """Refresh embedding when merged content changes."""
-        text = idea_to_text(idea.title, idea.problem, idea.target_user, idea.solution)
+        text = idea_to_text(
+            idea.title,
+            idea.problem,
+            idea.target_user,
+            idea.solution,
+            getattr(idea, "monetization_hypothesis", None),
+            getattr(idea, "payer", None),
+            getattr(idea, "pricing_model", None),
+            getattr(idea, "wedge", None),
+            getattr(idea, "why_now", None),
+        )
         vector = text_to_embedding(text)
         embedding_row = await session.scalar(
             select(IdeaEmbedding).where(IdeaEmbedding.idea_id == idea.id)
@@ -245,6 +273,22 @@ Output your decisions as a JSON array with one entry per pair.
                 keep_idea.problem = decision.get("merged_problem", keep_idea.problem)
                 keep_idea.target_user = decision.get("merged_target_user", keep_idea.target_user)
                 keep_idea.solution = decision.get("merged_solution", keep_idea.solution)
+                keep_idea.monetization_hypothesis = decision.get(
+                    "merged_monetization_hypothesis",
+                    getattr(keep_idea, "monetization_hypothesis", None),
+                )
+                keep_idea.payer = decision.get(
+                    "merged_payer", getattr(keep_idea, "payer", None)
+                )
+                keep_idea.pricing_model = decision.get(
+                    "merged_pricing_model", getattr(keep_idea, "pricing_model", None)
+                )
+                keep_idea.wedge = decision.get(
+                    "merged_wedge", getattr(keep_idea, "wedge", None)
+                )
+                keep_idea.why_now = decision.get(
+                    "merged_why_now", getattr(keep_idea, "why_now", None)
+                )
                 drop_idea.is_active = False
                 drop_idea.is_duplicate = True
                 drop_idea.merged_into_id = keep_idea.id

@@ -15,6 +15,9 @@ logger = get_logger(__name__)
 class SynthesizerAgent:
     """Agent 2: Converts signals to app ideas."""
 
+    def __init__(self, portfolio_guidance: str | None = None):
+        self.portfolio_guidance = (portfolio_guidance or "").strip()
+
     async def run(self, session: AsyncSession, signals: list[Signal]) -> list[Idea]:
         """Run synthesizer to convert signals to ideas."""
         prompt_template = load_prompt("synthesizer.md")
@@ -27,7 +30,15 @@ class SynthesizerAgent:
 
         signals_str = "\n".join(signal_texts)
 
-        prompt = f"""{prompt_template}
+        guidance_section = ""
+        if self.portfolio_guidance:
+            guidance_section = f"""
+
+## Portfolio Guidance
+{self.portfolio_guidance}
+"""
+
+        prompt = f"""{prompt_template}{guidance_section}
 
 Signals:
 {signals_str}
@@ -36,7 +47,7 @@ Signals:
         result = await async_llm_complete_json(prompt, max_tokens=3000, temperature=0.5)
 
         ideas_data = result if isinstance(result, list) else result.get("ideas", [])
-        logger.info("Generated %d ideas", len(ideas_data))
+        logger.info("Generated %d raw ideas", len(ideas_data))
 
         ideas = []
         for idx, idea_data in enumerate(ideas_data, start=1):
@@ -54,6 +65,11 @@ Signals:
                 problem=idea_data.get("problem", ""),
                 target_user=idea_data.get("target_user", ""),
                 solution=idea_data.get("solution", ""),
+                monetization_hypothesis=idea_data.get("monetization_hypothesis"),
+                payer=idea_data.get("payer"),
+                pricing_model=idea_data.get("pricing_model"),
+                wedge=idea_data.get("wedge"),
+                why_now=idea_data.get("why_now"),
                 status="new",
             )
             idea.signals = [signals[i] for i in sorted(set(supporting_indices))]

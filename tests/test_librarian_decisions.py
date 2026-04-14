@@ -12,6 +12,11 @@ def _idea(idea_id: int, title: str) -> SimpleNamespace:
         problem=f"{title} problem",
         target_user=f"{title} user",
         solution=f"{title} solution",
+        monetization_hypothesis=f"{title} monetization",
+        payer=f"{title} payer",
+        pricing_model="subscription",
+        wedge=f"{title} wedge",
+        why_now=f"{title} why now",
         is_active=True,
         is_duplicate=False,
         merged_into_id=None,
@@ -44,6 +49,11 @@ async def test_apply_decisions_uses_pair_index_for_multi_pair_merge():
             "merged_problem": "C merged problem",
             "merged_target_user": "C merged user",
             "merged_solution": "C merged solution",
+            "merged_monetization_hypothesis": "C merged monetization",
+            "merged_payer": "C merged payer",
+            "merged_pricing_model": "usage_based",
+            "merged_wedge": "C merged wedge",
+            "merged_why_now": "C merged why now",
         }
     ]
 
@@ -54,6 +64,11 @@ async def test_apply_decisions_uses_pair_index_for_multi_pair_merge():
     assert idea_b.is_active is False
     assert idea_b.merged_into_id == 3
     assert idea_c.title == "C merged"
+    assert idea_c.monetization_hypothesis == "C merged monetization"
+    assert idea_c.payer == "C merged payer"
+    assert idea_c.pricing_model == "usage_based"
+    assert idea_c.wedge == "C merged wedge"
+    assert idea_c.why_now == "C merged why now"
     assert refresh_calls == [3]
 
 

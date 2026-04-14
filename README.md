@@ -5,14 +5,15 @@ single Postgres backend.
 
 ## Runtime Architecture
 
-The active runtime is a 6-step async pipeline:
+The active runtime is a 7-step async pipeline:
 
 1. `ScoutAgent` collects problem signals.
-2. `SynthesizerAgent` creates idea candidates with deterministic source-signal links.
-3. `AnalyserAgent` scores ideas and stores assumptions/metadata.
-4. `DeepDiveAgent` adds market/feasibility enrichment.
-5. `CriticAgent` records adversarial concerns.
-6. `LibrarianAgent` performs embedding-based dedupe (`0.95` threshold).
+2. `SynthesizerAgent` creates idea candidates with deterministic source-signal links and structured business fields.
+3. `AnalyserAgent` scores ideas and stores structured subscores.
+4. `DeepDiveAgent` adds market, pricing, validation, and feasibility enrichment.
+5. `CriticAgent` records adversarial concerns including monetization and validation blockers.
+6. `LibrarianAgent` performs embedding-based dedupe while preserving business fields.
+7. `PortfolioAgent` turns recurring crossed-out rationale into compact next-run guidance.
 
 ## Postgres Data Model
 
@@ -21,6 +22,7 @@ Core entities:
 - `ideas`
 - `idea_signals` (Idea<->Signal graph edges)
 - `analyses`, `enrichments`, `critiques`
+- `pipeline_runs`, `agent_runs`, `feedback_events`, `portfolio_memories`
 
 Graph and embedding entities:
 - `idea_embeddings` (pgvector embedding per idea)
@@ -68,6 +70,11 @@ cd dashboard
 pip install -r requirements.txt
 streamlit run app.py
 ```
+
+Dashboard notes:
+- Crossing out an idea now records explicit negative feedback with a required reason.
+- Saving an idea remains a workflow/bookmark action and is not part of the learning signal.
+- Portfolio guidance appears in the dashboard overview once the pipeline has written `portfolio_memories`.
 
 ## Notes
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import Critique, Idea
+from utils.idea_context import format_business_context
 from utils.llm_client import async_llm_complete_json
 from utils.logger import get_logger
 from utils.prompts_utils import load_prompt
@@ -22,11 +23,20 @@ class CriticAgent:
 
         critiques = []
         for idx, idea in enumerate(ideas, start=1):
+            enrichment = idea.enrichment
+            business_context = format_business_context(idea)
             idea_text = f"""Title: {idea.title}
 Problem: {idea.problem}
 Target User: {idea.target_user}
 Solution: {idea.solution}
-Enrichment: {idea.enrichment.additional_notes if idea.enrichment else 'N/A'}"""
+Competitors: {getattr(enrichment, 'competitor_details', None) if enrichment else 'N/A'}
+Monetization Strategies: {getattr(enrichment, 'monetization_strategies', None) if enrichment else 'N/A'}
+Evidence Snippets: {getattr(enrichment, 'evidence_snippets', None) if enrichment else 'N/A'}
+Risks: {getattr(enrichment, 'risks', None) if enrichment else 'N/A'}
+Go-to-Market Hypotheses: {getattr(enrichment, 'go_to_market_hypotheses', None) if enrichment else 'N/A'}
+Enrichment Notes: {enrichment.additional_notes if enrichment else 'N/A'}"""
+            if business_context:
+                idea_text += f"\n{business_context}"
 
             prompt = f"""{prompt_template}
 
@@ -45,6 +55,8 @@ Idea:
                 saturation_issues=critique_data.get("saturation_issues", []),
                 distribution_blockers=critique_data.get("distribution_blockers", []),
                 technical_blockers=critique_data.get("technical_blockers", []),
+                monetization_blockers=critique_data.get("monetization_blockers", []),
+                validation_blockers=critique_data.get("validation_blockers", []),
                 additional_concerns=critique_data.get("additional_concerns"),
             )
             session.add(critique)

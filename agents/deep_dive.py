@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import Enrichment, Idea
+from utils.idea_context import format_business_context
 from utils.llm_client import async_llm_complete_json
 from utils.logger import get_logger
 from utils.prompts_utils import load_prompt
@@ -33,10 +34,13 @@ class DeepDiveAgent:
         enrichments = []
         for idx, idea in enumerate(ideas, start=1):
             logger.info("Deep Dive idea %d/%d: %s", idx, len(ideas), idea.title)
+            business_context = format_business_context(idea)
             idea_text = f"""Title: {idea.title}
 Problem: {idea.problem}
 Target User: {idea.target_user}
 Solution: {idea.solution}"""
+            if business_context:
+                idea_text += f"\n{business_context}"
 
             pass_outputs: list[dict] = []
             previous_output: dict = {}
@@ -110,13 +114,17 @@ Refinement directive:
             enrichment.competitors = competitor_names
             enrichment.competitor_details = competitor_details
             enrichment.app_landscape = enrich_data.get("app_landscape", {})
+            enrichment.pricing_landscape = enrich_data.get("pricing_landscape", {})
             enrichment.monetization_strategies = enrich_data.get("monetization_strategies", [])
+            enrichment.paid_alternatives = enrich_data.get("paid_alternatives", [])
             enrichment.tech_stack = enrich_data.get("tech_stack", [])
             enrichment.feasibility = enrich_data.get("feasibility", "unknown")
             enrichment.confidence = enrich_data.get("confidence")
             enrichment.evidence_snippets = enrich_data.get("evidence_snippets", [])
             enrichment.risks = enrich_data.get("risks", [])
             enrichment.go_to_market_hypotheses = enrich_data.get("go_to_market_hypotheses", [])
+            enrichment.validation_tests = enrich_data.get("validation_tests", [])
+            enrichment.switching_cost_notes = enrich_data.get("switching_cost_notes")
             enrichment.additional_notes = enrich_data.get("additional_notes")
             enrichments.append(enrichment)
 
@@ -139,13 +147,17 @@ Refinement directive:
         final = {
             "competitors": [],
             "app_landscape": {},
+            "pricing_landscape": {},
             "monetization_strategies": [],
+            "paid_alternatives": [],
             "tech_stack": [],
             "feasibility": "unknown",
             "confidence": None,
             "evidence_snippets": [],
             "risks": [],
             "go_to_market_hypotheses": [],
+            "validation_tests": [],
+            "switching_cost_notes": None,
             "additional_notes": None,
         }
         for output in pass_outputs:
@@ -202,12 +214,16 @@ Refinement directive:
         gaps: list[str] = []
         if not output.get("competitors"):
             gaps.append("competitors")
+        if not output.get("pricing_landscape"):
+            gaps.append("pricing_landscape")
         if not output.get("evidence_snippets"):
             gaps.append("evidence_snippets")
         if not output.get("risks"):
             gaps.append("risks")
         if not output.get("go_to_market_hypotheses"):
             gaps.append("go_to_market_hypotheses")
+        if not output.get("validation_tests"):
+            gaps.append("validation_tests")
         confidence = output.get("confidence")
         if not isinstance(confidence, (int, float)):
             gaps.append("confidence")
@@ -226,7 +242,11 @@ Refinement directive:
         cleaned: dict = {}
         cleaned["competitors"] = self._clean_competitors(output.get("competitors"), issues)
         cleaned["app_landscape"] = output.get("app_landscape") if isinstance(output.get("app_landscape"), dict) else {}
+        cleaned["pricing_landscape"] = (
+            output.get("pricing_landscape") if isinstance(output.get("pricing_landscape"), dict) else {}
+        )
         cleaned["monetization_strategies"] = self._clean_string_list(output.get("monetization_strategies"))
+        cleaned["paid_alternatives"] = self._clean_string_list(output.get("paid_alternatives"))
         cleaned["tech_stack"] = self._clean_string_list(output.get("tech_stack"))
 
         feasibility = str(output.get("feasibility", "unknown")).lower().strip()
@@ -244,6 +264,11 @@ Refinement directive:
         cleaned["evidence_snippets"] = self._clean_string_list(output.get("evidence_snippets"))
         cleaned["risks"] = self._clean_string_list(output.get("risks"))
         cleaned["go_to_market_hypotheses"] = self._clean_string_list(output.get("go_to_market_hypotheses"))
+        cleaned["validation_tests"] = self._clean_string_list(output.get("validation_tests"))
+        switching_cost_notes = output.get("switching_cost_notes")
+        cleaned["switching_cost_notes"] = (
+            str(switching_cost_notes).strip() if isinstance(switching_cost_notes, str) else None
+        )
         notes = output.get("additional_notes")
         cleaned["additional_notes"] = notes if isinstance(notes, str) else None
 

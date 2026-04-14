@@ -31,10 +31,28 @@ def text_to_embedding(text: str, dim: int = EMBEDDING_DIM) -> list[float]:
     return [v / norm for v in vec]
 
 
-def idea_to_text(title: str, problem: str, target_user: str, solution: str) -> str:
-    return "\n".join(
-        [title.strip(), problem.strip(), target_user.strip(), solution.strip()]
-    )
+def idea_to_text(
+    title: str,
+    problem: str,
+    target_user: str,
+    solution: str,
+    monetization_hypothesis: str | None = None,
+    payer: str | None = None,
+    pricing_model: str | None = None,
+    wedge: str | None = None,
+    why_now: str | None = None,
+) -> str:
+    parts = [title.strip(), problem.strip(), target_user.strip(), solution.strip()]
+    for value in (
+        monetization_hypothesis,
+        payer,
+        pricing_model,
+        wedge,
+        why_now,
+    ):
+        if value:
+            parts.append(value.strip())
+    return "\n".join(parts)
 
 
 def cosine_similarity(v1: Iterable[float], v2: Iterable[float]) -> float:

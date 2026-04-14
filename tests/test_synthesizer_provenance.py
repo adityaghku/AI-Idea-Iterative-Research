@@ -1,6 +1,6 @@
 import pytest
 
-from agents.db import Signal
+from db import Signal
 from agents.synthesizer import SynthesizerAgent
 
 
@@ -38,9 +38,9 @@ async def test_synthesizer_uses_supporting_signal_indices(monkeypatch):
     monkeypatch.setattr("agents.synthesizer.async_llm_complete_json", fake_llm)
 
     signals = [
-        Signal(content="s0", source_url=None, signal_type="problem_statement", metadata={}),
-        Signal(content="s1", source_url=None, signal_type="complaint", metadata={}),
-        Signal(content="s2", source_url=None, signal_type="unmet_need", metadata={}),
+        Signal(content="s0", source_url=None, signal_type="problem_statement", signal_metadata={}),
+        Signal(content="s1", source_url=None, signal_type="complaint", signal_metadata={}),
+        Signal(content="s2", source_url=None, signal_type="unmet_need", signal_metadata={}),
     ]
     session = FakeSession()
     ideas = await SynthesizerAgent().run(session, signals)

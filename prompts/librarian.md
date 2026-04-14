@@ -14,6 +14,7 @@ You will receive pairs of ideas that have been flagged as potentially similar ba
 
 For each pair, you will receive:
 - Both ideas' titles, problems, target users, and solutions
+- Both ideas' monetization hypothesis, payer, pricing model, wedge, and why-now framing
 - The embedding similarity score between them
 
 ## Decision Logic
@@ -51,6 +52,11 @@ Return a JSON array of decisions:
     "merged_problem": "Merged problem statement (if action is merge)",
     "merged_target_user": "Merged target user (if action is merge)",
     "merged_solution": "Merged solution (if action is merge)",
+    "merged_monetization_hypothesis": "Merged business thesis (if action is merge)",
+    "merged_payer": "Merged buyer (if action is merge)",
+    "merged_pricing_model": "Merged pricing model (if action is merge)",
+    "merged_wedge": "Merged wedge (if action is merge)",
+    "merged_why_now": "Merged timing reason (if action is merge)",
     "drop_idea_id": ID of idea to drop (if action is drop),
     "keep_idea_id": ID of idea to keep (if action is keep_separate or drop)
   }

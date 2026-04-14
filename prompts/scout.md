@@ -47,7 +47,10 @@ Return a JSON array of signals found. Each signal should have:
 {
   "signal_type": "problem_statement|complaint|unmet_need|repeated_pattern",
   "content": "The signal text (max 200 chars)",
-  "source_context": "Brief note about where this was observed"
+  "source_context": "Brief note about where this was observed",
+  "payment_context": "Who pays today or what cost/time pain is visible (optional)",
+  "current_spend_or_workaround": "Current workaround or substitute behavior (optional)",
+  "urgency": "low|medium|high (optional)"
 }
 ```
 
@@ -64,17 +67,55 @@ Return a JSON array of signals found. Each signal should have:
 - Only return a near-duplicate signal when there is materially new evidence
 - Prefer novel user segments, contexts, or pain points over rephrased duplicates
 - Prefer signals with clear trigger, failed workaround, and user impact
+- Prefer signals with visible willingness to pay, current spend, or expensive workaround behavior
 - Prioritize recent sources and concrete citations over generic trend claims
 - Avoid over-clustering around a single domain/theme in one run; aim for breadth across at least 4 distinct problem domains
 - Treat novelty as first-class: reject candidate signals if they are semantic restatements of already captured ones
 - Prefer evidence from primary user voices (threads/reviews/comments) over marketing pages
 - For each accepted signal, include a specificity anchor in `source_context` (community/thread type/timeframe)
 
+## Rejection Criteria (Based on Crossed-Out Ideas Analysis)
+
+**AVOID signals that suggest ideas with these characteristics:**
+
+1. **Legal/Compliance Issues:**
+   - DRM circumvention or format conversion of proprietary content
+   - Terms of service violations for major platforms
+   - Regulatory gray areas (medical, emergency, financial without proper licensing)
+
+2. **Technical Infeasibility:**
+   - Hardware limitations that cannot be fixed by software
+   - Deep OS integration requiring system-level access
+   - Platform-specific bugs that should be fixed by the platform owner
+   - "Workaround for [Apple/Google/Microsoft] limitation" patterns
+
+3. **Market/Competition Issues:**
+   - Solutions that already exist and are widely available
+   - Niche problems affecting very small user groups
+   - Features that belong at OS level (system-wide voice input, battery optimization)
+   - "Alternative to [major platform feature]" without unique value
+
+4. **Implementation Complexity:**
+   - Requires building competitor apps from scratch
+   - Complex hardware-software integration
+   - High maintenance burden for solo developers
+
+**PREFER signals that suggest:**
+- Software-only solutions within app sandbox
+- Legal business models with clear monetization
+- Addressable markets for solo developers
+- Unique value propositions not served by existing solutions
+- Everyday problems with clear user pain points
+
 ## Output Contract (Strict)
 
 - Return JSON only. Do not include markdown or prose.
 - Return exactly an array of objects (no wrapper object).
-- Use only these keys for each object: `signal_type`, `content`, `source_context`.
+- Use only these keys for each object:
+  - `signal_type`
+  - `content`
+  - `source_context`
+  - optional: `payment_context`, `current_spend_or_workaround`, `urgency`
 - `signal_type` must be one of: `problem_statement`, `complaint`, `unmet_need`, `repeated_pattern`.
 - `content` must be concise and <= 200 characters.
 - If no good signals are found, return `[]`.

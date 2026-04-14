@@ -14,7 +14,18 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from db.config import get_database_url_sync
-from db import Idea, Analysis, Enrichment, Critique, Signal, IdeaRelation, SignalRelation
+from db import (
+    Analysis,
+    Critique,
+    Enrichment,
+    FeedbackEvent,
+    Idea,
+    IdeaRelation,
+    PortfolioMemory,
+    Signal,
+    SignalRelation,
+    init_db_sync,
+)
 
 st.set_page_config(
     page_title="Idea Pipeline Dashboard",
@@ -26,6 +37,18 @@ st.set_page_config(
 _sync_engine = create_engine(get_database_url_sync())
 _SyncSession = sessionmaker(bind=_sync_engine)
 _LOGS_DIR = Path(__file__).resolve().parent.parent / "logs"
+_CROSSOUT_REASON_LABELS = {
+    "weak_buyer": "Weak buyer / unclear willingness to pay",
+    "low_urgency": "Low urgency / nice-to-have",
+    "too_crowded": "Too crowded / hard to differentiate",
+    "bad_distribution": "Distribution looks too hard",
+    "too_complex": "Too complex for a solo founder",
+    "platform_risk": "Platform / API / policy risk",
+    "not_interesting": "Not interesting enough to pursue",
+    "other": "Other",
+}
+
+init_db_sync()
 
 
 @st.cache_data(ttl=300, show_spinner="Loading data...")
@@ -64,11 +87,22 @@ def get_ideas_data() -> pd.DataFrame:
                 "problem": idea.problem,
                 "target_user": idea.target_user,
                 "solution": idea.solution,
+                "monetization_hypothesis": idea.monetization_hypothesis,
+                "payer": idea.payer,
+                "pricing_model": idea.pricing_model,
+                "wedge": idea.wedge,
+                "why_now": idea.why_now,
                 "status": idea.status,
                 "created_at": idea.created_at,
                 "is_crossed_out": idea.is_crossed_out,
                 "is_saved": idea.is_saved,
                 "score": analysis.score if analysis else None,
+                "demand_score": analysis.demand_score if analysis else None,
+                "gtm_score": analysis.gtm_score if analysis else None,
+                "build_risk_score": analysis.build_risk_score if analysis else None,
+                "retention_score": analysis.retention_score if analysis else None,
+                "monetization_score": analysis.monetization_score if analysis else None,
+                "validation_score": analysis.validation_score if analysis else None,
                 "monetization_potential": analysis.monetization_potential if analysis else None,
                 "complexity": analysis.complexity if analysis else None,
                 "tags": analysis.tags if analysis else [],
@@ -76,17 +110,23 @@ def get_ideas_data() -> pd.DataFrame:
                 "comments": analysis.comments if analysis else None,
                 "competitors": enrichment.competitors if enrichment else [],
                 "competitor_details": enrichment.competitor_details if enrichment else [],
+                "pricing_landscape": enrichment.pricing_landscape if enrichment else {},
                 "monetization_strategies": enrichment.monetization_strategies if enrichment else [],
+                "paid_alternatives": enrichment.paid_alternatives if enrichment else [],
                 "tech_stack": enrichment.tech_stack if enrichment else [],
                 "feasibility": enrichment.feasibility if enrichment else None,
                 "confidence": enrichment.confidence if enrichment else None,
                 "evidence_snippets": enrichment.evidence_snippets if enrichment else [],
                 "risks": enrichment.risks if enrichment else [],
                 "go_to_market_hypotheses": enrichment.go_to_market_hypotheses if enrichment else [],
+                "validation_tests": enrichment.validation_tests if enrichment else [],
+                "switching_cost_notes": enrichment.switching_cost_notes if enrichment else None,
                 "additional_notes": enrichment.additional_notes if enrichment else None,
                 "saturation_issues": critique.saturation_issues if critique else [],
                 "distribution_blockers": critique.distribution_blockers if critique else [],
                 "technical_blockers": critique.technical_blockers if critique else [],
+                "monetization_blockers": critique.monetization_blockers if critique else [],
+                "validation_blockers": critique.validation_blockers if critique else [],
                 "critique_concerns": critique.additional_concerns if critique else None,
             })
         return pd.DataFrame(data)
@@ -94,22 +134,39 @@ def get_ideas_data() -> pd.DataFrame:
 
 @st.cache_data(ttl=300, show_spinner="Loading signals...")
 def get_signals_data() -> pd.DataFrame:
-    """Get all signals."""
+    """Get all signals with strength = max(metadata score 0–1, max relation similarity)."""
     with _SyncSession() as session:
-        stmt = select(Signal)
-        signals = session.execute(stmt).scalars().all()
-        
-        data = []
-        for signal in signals:
-            data.append({
-                "id": signal.id,
-                "content": signal.content,
-                "source_url": signal.source_url,
-                "signal_type": signal.signal_type,
-                "signal_metadata": signal.signal_metadata,
-                "created_at": signal.created_at,
-            })
-        return pd.DataFrame(data)
+        signals = session.execute(select(Signal)).scalars().all()
+        rels = session.execute(select(SignalRelation)).scalars().all()
+
+    max_sim_by_id: dict[int, float] = {}
+    for rel in rels:
+        if rel.similarity is None:
+            continue
+        sim = float(rel.similarity)
+        for sid in (rel.from_signal_id, rel.to_signal_id):
+            max_sim_by_id[sid] = max(max_sim_by_id.get(sid, 0.0), sim)
+
+    data = []
+    for signal in signals:
+        meta = signal.signal_metadata if isinstance(signal.signal_metadata, dict) else {}
+        meta_score = _metadata_score_0_1(meta)
+        max_sim = max_sim_by_id.get(signal.id, 0.0)
+        if meta_score is not None:
+            strength = max(meta_score, max_sim)
+        else:
+            strength = max_sim
+
+        data.append({
+            "id": signal.id,
+            "content": signal.content,
+            "source_url": signal.source_url,
+            "signal_type": signal.signal_type,
+            "signal_metadata": signal.signal_metadata,
+            "created_at": signal.created_at,
+            "strength": strength,
+        })
+    return pd.DataFrame(data)
 
 
 @st.cache_data(ttl=300, show_spinner="Loading relations...")
@@ -150,6 +207,44 @@ def get_relations_data() -> pd.DataFrame:
         return pd.DataFrame(data)
 
 
+@st.cache_data(ttl=30, show_spinner="Loading feedback...")
+def get_feedback_data() -> pd.DataFrame:
+    with _SyncSession() as session:
+        rows = session.execute(
+            select(FeedbackEvent).where(FeedbackEvent.event_type == "crossed_out")
+        ).scalars().all()
+    data = [
+        {
+            "id": row.id,
+            "idea_id": row.idea_id,
+            "reason_code": row.reason_code,
+            "reason_text": row.reason_text,
+            "learning_weight": row.learning_weight,
+            "created_at": row.created_at,
+        }
+        for row in rows
+    ]
+    return pd.DataFrame(data)
+
+
+@st.cache_data(ttl=30, show_spinner="Loading portfolio guidance...")
+def get_latest_portfolio_memory() -> dict | None:
+    with _SyncSession() as session:
+        latest = session.execute(
+            select(PortfolioMemory).order_by(PortfolioMemory.id.desc()).limit(1)
+        ).scalar_one_or_none()
+    if not latest:
+        return None
+    return {
+        "summary": latest.summary,
+        "scout_guidance": latest.scout_guidance,
+        "synthesizer_guidance": latest.synthesizer_guidance,
+        "analyser_guidance": latest.analyser_guidance,
+        "recurring_patterns": latest.recurring_patterns or [],
+        "created_at": latest.created_at,
+    }
+
+
 @st.cache_data(ttl=10, show_spinner="Loading latest log...")
 def get_latest_log_file() -> str | None:
     if not _LOGS_DIR.exists():
@@ -166,6 +261,20 @@ def read_log_content(path: str) -> list[str]:
     if not file_path.exists():
         return []
     return file_path.read_text(encoding="utf-8", errors="replace").splitlines()
+
+
+def _metadata_score_0_1(meta: dict | None) -> float | None:
+    """Read an optional 0–1 score from signal_metadata (also accepts 0–100)."""
+    if not meta:
+        return None
+    for key in ("score", "relevance", "strength"):
+        v = meta.get(key)
+        if isinstance(v, (int, float)) and pd.notna(v):
+            x = float(v)
+            if x > 1.0:
+                x = x / 100.0
+            return max(0.0, min(1.0, x))
+    return None
 
 
 def filter_log_lines(lines: list[str], selected_levels: list[str]) -> list[str]:
@@ -197,6 +306,10 @@ def _idea_mark_header_suffix(row: pd.Series) -> str:
     return " | ".join(parts)
 
 
+def _crossout_reason_options() -> list[tuple[str, str]]:
+    return [("", "Select reason")] + list(_CROSSOUT_REASON_LABELS.items())
+
+
 def _sort_ideas_df(filtered: pd.DataFrame, sort_by: str, ascending: bool) -> pd.DataFrame:
     """Sort ideas dataframe."""
     if filtered.empty:
@@ -226,23 +339,21 @@ def apply_filters(
 ) -> pd.DataFrame:
     """Apply filtering and sorting to ideas dataframe.
 
-    filter_crossed / filter_saved: neither = default (hide crossed-out); one or both = require those flags (AND).
+    filter_crossed: False = hide crossed-out ideas; True = show only crossed-out ideas.
+    filter_saved: True = include saved ideas (default); False = exclude saved ideas.
     """
     if df.empty:
         return df
 
     filtered = df.copy()
 
-    if not filter_crossed and not filter_saved:
+    if not filter_crossed:
         filtered = filtered[filtered["is_crossed_out"] != True]
-    elif filter_crossed and not filter_saved:
-        filtered = filtered[filtered["is_crossed_out"] == True]
-    elif not filter_crossed and filter_saved:
-        filtered = filtered[filtered["is_saved"] == True]
     else:
-        filtered = filtered[
-            (filtered["is_crossed_out"] == True) & (filtered["is_saved"] == True)
-        ]
+        filtered = filtered[filtered["is_crossed_out"] == True]
+
+    if not filter_saved:
+        filtered = filtered[filtered["is_saved"] != True]
 
     if tags:
         mask = filtered["tags"].apply(lambda x: any(t in x for t in tags) if isinstance(x, list) else False)
@@ -270,6 +381,18 @@ def render_idea_detail(idea_row: pd.Series):
     with col2:
         st.markdown("**Solution:**")
         st.write(idea_row["solution"])
+
+    if idea_row.get("monetization_hypothesis"):
+        st.markdown("**Monetization Hypothesis:**")
+        st.write(idea_row["monetization_hypothesis"])
+    if idea_row.get("payer") or idea_row.get("pricing_model"):
+        st.markdown(
+            f"**Buyer / Pricing:** {idea_row.get('payer') or 'N/A'} / {idea_row.get('pricing_model') or 'N/A'}"
+        )
+    if idea_row.get("wedge"):
+        st.markdown(f"**Wedge:** {idea_row['wedge']}")
+    if idea_row.get("why_now"):
+        st.markdown(f"**Why Now:** {idea_row['why_now']}")
     
     st.divider()
     
@@ -291,6 +414,20 @@ def render_idea_detail(idea_row: pd.Series):
         st.markdown("**Assumptions:**")
         for assumption in idea_row["assumptions"]:
             st.write(f"- {assumption}")
+
+    score_pairs = [
+        ("Demand", idea_row.get("demand_score")),
+        ("GTM", idea_row.get("gtm_score")),
+        ("Build Risk", idea_row.get("build_risk_score")),
+        ("Retention", idea_row.get("retention_score")),
+        ("Monetization", idea_row.get("monetization_score")),
+        ("Validation", idea_row.get("validation_score")),
+    ]
+    populated_score_pairs = [(label, value) for label, value in score_pairs if pd.notna(value)]
+    if populated_score_pairs:
+        st.markdown("**Subscores:**")
+        for label, value in populated_score_pairs:
+            st.write(f"- {label}: {int(value)}/100")
     
     if isinstance(idea_row["competitors"], list) and idea_row["competitors"]:
         st.markdown("**Competitors:**")
@@ -316,6 +453,16 @@ def render_idea_detail(idea_row: pd.Series):
         st.markdown("**Monetization Strategies:**")
         for strat in idea_row["monetization_strategies"]:
             st.write(f"- {strat}")
+
+    if isinstance(idea_row.get("paid_alternatives"), list) and idea_row["paid_alternatives"]:
+        st.markdown("**Paid Alternatives / Current Spend:**")
+        for alt in idea_row["paid_alternatives"]:
+            st.write(f"- {alt}")
+
+    pricing_landscape = idea_row.get("pricing_landscape")
+    if isinstance(pricing_landscape, dict) and pricing_landscape:
+        st.markdown("**Pricing Landscape:**")
+        st.json(pricing_landscape)
     
     if isinstance(idea_row["tech_stack"], list) and idea_row["tech_stack"]:
         st.markdown("**Tech Stack:**")
@@ -351,6 +498,15 @@ def render_idea_detail(idea_row: pd.Series):
         st.markdown("**Go-to-Market Hypotheses:**")
         for hypothesis in idea_row["go_to_market_hypotheses"]:
             st.write(f"- {hypothesis}")
+
+    if isinstance(idea_row.get("validation_tests"), list) and idea_row["validation_tests"]:
+        st.markdown("**Validation Tests:**")
+        for test in idea_row["validation_tests"]:
+            st.write(f"- {test}")
+
+    if pd.notna(idea_row.get("switching_cost_notes")) and idea_row["switching_cost_notes"]:
+        st.markdown("**Switching Cost Notes:**")
+        st.write(idea_row["switching_cost_notes"])
     
     if isinstance(idea_row["saturation_issues"], list) and idea_row["saturation_issues"]:
         st.markdown("**Saturation Issues:**")
@@ -365,6 +521,16 @@ def render_idea_detail(idea_row: pd.Series):
     if isinstance(idea_row["technical_blockers"], list) and idea_row["technical_blockers"]:
         st.markdown("**Technical Blockers:**")
         for blocker in idea_row["technical_blockers"]:
+            st.write(f"- {blocker}")
+
+    if isinstance(idea_row.get("monetization_blockers"), list) and idea_row["monetization_blockers"]:
+        st.markdown("**Monetization Blockers:**")
+        for blocker in idea_row["monetization_blockers"]:
+            st.write(f"- {blocker}")
+
+    if isinstance(idea_row.get("validation_blockers"), list) and idea_row["validation_blockers"]:
+        st.markdown("**Validation Blockers:**")
+        for blocker in idea_row["validation_blockers"]:
             st.write(f"- {blocker}")
     
     if pd.notna(idea_row.get("critique_concerns")) and idea_row["critique_concerns"]:
@@ -383,6 +549,29 @@ def update_idea_flag(idea_id: int, field: str, value: bool) -> None:
             session.commit()
 
 
+def submit_crossout_feedback(idea_id: int, reason_code: str, reason_text: str | None) -> bool:
+    """Cross out an idea and persist explicit negative-feedback rationale."""
+    reason_code = reason_code.strip()
+    if not reason_code:
+        return False
+    with _SyncSession() as session:
+        idea = session.get(Idea, idea_id)
+        if not idea:
+            return False
+        idea.is_crossed_out = True
+        session.add(
+            FeedbackEvent(
+                idea_id=idea_id,
+                event_type="crossed_out",
+                reason_code=reason_code,
+                reason_text=(reason_text or "").strip() or None,
+                learning_weight=1.0,
+            )
+        )
+        session.commit()
+    return True
+
+
 def main():
     st.title("💡 Idea Pipeline Dashboard")
     
@@ -393,6 +582,8 @@ def main():
     ideas_df = get_ideas_data()
     signals_df = get_signals_data()
     relations_df = get_relations_data()
+    feedback_df = get_feedback_data()
+    portfolio_memory = get_latest_portfolio_memory()
     
     with tab1:
         st.subheader("Ideas")
@@ -404,14 +595,14 @@ def main():
                 st.header("Filters")
 
                 st.caption(
-                    "Match ideas that are crossed out and/or saved. "
-                    "Leave both unchecked for the default list (crossed-out ideas hidden)."
+                    "✕ Crossed: off hides crossed-out ideas; on lists only crossed-out. "
+                    "🚩 Saved: on (default) includes saved ideas; off excludes them."
                 )
                 fc1, fc2 = st.columns(2)
                 with fc1:
-                    filter_crossed = st.checkbox("✕ Crossed", value=False)
+                    filter_crossed = st.checkbox("✕ Crossed only", value=False)
                 with fc2:
-                    filter_saved = st.checkbox("🚩 Saved", value=False)
+                    filter_saved = st.checkbox("🚩 Include saved", value=True)
                 
                 all_tags = get_all_tags(ideas_df)
                 selected_tags = st.multiselect("Filter by Tags", all_tags, default=[])
@@ -460,16 +651,47 @@ def main():
                     iid = int(row["id"])
                     bx1, bx2 = st.columns(2)
                     with bx1:
-                        if st.button(
-                            "✕",
-                            key=f"cross_{iid}",
-                            use_container_width=True,
-                            help="Toggle crossed out",
-                            type="primary" if is_co else "secondary",
-                        ):
-                            update_idea_flag(iid, "is_crossed_out", not is_co)
-                            get_ideas_data.clear()
-                            st.rerun()
+                        if not is_co:
+                            reason_value = st.selectbox(
+                                "Cross-out reason",
+                                options=[code for code, _ in _crossout_reason_options()],
+                                format_func=lambda code: "Select reason"
+                                if not code
+                                else _CROSSOUT_REASON_LABELS[code],
+                                key=f"cross_reason_{iid}",
+                                label_visibility="collapsed",
+                            )
+                            reason_text = st.text_input(
+                                "Cross-out notes",
+                                key=f"cross_notes_{iid}",
+                                placeholder="Optional notes",
+                                label_visibility="collapsed",
+                            )
+                            if st.button(
+                                "✕",
+                                key=f"cross_{iid}",
+                                use_container_width=True,
+                                help="Cross out and submit feedback",
+                                type="secondary",
+                            ):
+                                if submit_crossout_feedback(iid, reason_value, reason_text):
+                                    get_ideas_data.clear()
+                                    get_feedback_data.clear()
+                                    get_latest_portfolio_memory.clear()
+                                    st.rerun()
+                                else:
+                                    st.warning("Select a cross-out reason first.", icon="⚠️")
+                        else:
+                            if st.button(
+                                "Undo ✕",
+                                key=f"cross_{iid}",
+                                use_container_width=True,
+                                help="Remove crossed-out flag without deleting past feedback",
+                                type="primary",
+                            ):
+                                update_idea_flag(iid, "is_crossed_out", False)
+                                get_ideas_data.clear()
+                                st.rerun()
                     with bx2:
                         if st.button(
                             "🚩",
@@ -484,17 +706,33 @@ def main():
     
     with tab2:
         st.subheader("Signals")
-        st.write(f"Total: {len(signals_df)} signals")
         
         if signals_df.empty:
             st.info("No signals found.")
         else:
+            min_strength = st.slider(
+                "Minimum strength (0–1)",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.4,
+                step=0.05,
+                help="Strength is the max of any stored metadata score and the highest "
+                "signal–signal similarity for this row. Default 0.4 hides weak/unconnected signals.",
+            )
+            view = signals_df[signals_df["strength"] >= min_strength].copy()
+            st.caption(
+                f"Showing **{len(view)}** of **{len(signals_df)}** signals with strength **≥** {min_strength:.2f}"
+            )
+            
             with st.expander("Raw Data"):
-                st.dataframe(signals_df, use_container_width=True)
+                st.dataframe(view, use_container_width=True)
             
             st.write("Signal Types Distribution")
-            type_counts = signals_df["signal_type"].value_counts()
-            st.bar_chart(type_counts)
+            if view.empty:
+                st.info("No signals in this range. Lower the minimum strength to see more.")
+            else:
+                type_counts = view["signal_type"].value_counts()
+                st.bar_chart(type_counts)
     
     with tab3:
         st.subheader("Relations")
@@ -548,6 +786,37 @@ def main():
                     st.bar_chart(score_bins)
         else:
             st.info("Run the pipeline to generate ideas.")
+
+        st.divider()
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write("Crossed-Out Feedback")
+            if feedback_df.empty:
+                st.info("No explicit crossed-out feedback yet.")
+            else:
+                reason_counts = (
+                    feedback_df["reason_code"]
+                    .fillna("unknown")
+                    .map(lambda code: _CROSSOUT_REASON_LABELS.get(code, code))
+                    .value_counts()
+                )
+                st.bar_chart(reason_counts)
+        with col2:
+            st.write("Latest Portfolio Guidance")
+            if not portfolio_memory:
+                st.info("No portfolio guidance written yet.")
+            else:
+                if portfolio_memory.get("summary"):
+                    st.write(portfolio_memory["summary"])
+                recurring_patterns = portfolio_memory.get("recurring_patterns") or []
+                if recurring_patterns:
+                    st.markdown("**Recurring rejection patterns:**")
+                    for pattern in recurring_patterns:
+                        label = _CROSSOUT_REASON_LABELS.get(
+                            pattern.get("reason_code"), pattern.get("reason_code")
+                        )
+                        st.write(f"- {label}: {pattern.get('count', 0)}")
 
     with tab5:
         st.subheader("Latest Pipeline Log")

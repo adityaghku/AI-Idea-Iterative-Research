@@ -42,6 +42,25 @@ _QUERY_ROTATIONS = [
 ]
 
 
+def _signal_metadata_from_llm(signal_data: dict) -> dict:
+    """Keep only structured metadata fields that help later monetization analysis."""
+    allowed_keys = {
+        "payment_context",
+        "current_spend_or_workaround",
+        "urgency",
+        "score",
+        "relevance",
+        "strength",
+    }
+    out: dict = {}
+    for key in allowed_keys:
+        value = signal_data.get(key)
+        if value in (None, "", []):
+            continue
+        out[key] = value
+    return out
+
+
 def _normalize_memory_key(text: str) -> str:
     """Create a compact, comparable key for scout memory lookups."""
     cleaned = re.sub(r"[^a-z0-9\s]", " ", text.lower())
@@ -95,8 +114,9 @@ def _stable_hash(text: str) -> int:
 class ScoutAgent:
     """Agent 1: Discovers signals from web using LLM with built-in search."""
 
-    def __init__(self, batch_size: int = 5):
+    def __init__(self, batch_size: int = 5, portfolio_guidance: str | None = None):
         self.batch_size = batch_size
+        self.portfolio_guidance = (portfolio_guidance or "").strip()
 
     async def run(self, session: AsyncSession) -> list[Signal]:
         """Run scout to discover signals using LLM with web search."""
@@ -115,7 +135,12 @@ class ScoutAgent:
             f"{rotation_queries}\n\n"
             "Diversity rule: avoid returning more than 2 signals from the same "
             "problem domain.\n\n"
-            f"## Memory\n{memory_context}"
+            + (
+                f"## Portfolio Guidance\n{self.portfolio_guidance}\n\n"
+                if self.portfolio_guidance
+                else ""
+            )
+            + f"## Memory\n{memory_context}"
         )
 
         try:
@@ -210,7 +235,7 @@ class ScoutAgent:
                 content=content,
                 source_url=sd.get("source_context", ""),
                 signal_type=sd.get("signal_type", "problem_statement"),
-                signal_metadata={},
+                signal_metadata=_signal_metadata_from_llm(sd),
             )
             session.add(signal)
             all_signals.append(signal)

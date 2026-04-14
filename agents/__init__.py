@@ -5,6 +5,7 @@ from agents.analyser import AnalyserAgent
 from agents.deep_dive import DeepDiveAgent
 from agents.critic import CriticAgent
 from agents.librarian import LibrarianAgent
+from agents.portfolio import PortfolioAgent
 from db import (
     get_session,
     init_db,
@@ -26,6 +27,7 @@ __all__ = [
     "DeepDiveAgent",
     "CriticAgent",
     "LibrarianAgent",
+    "PortfolioAgent",
     "get_session",
     "init_db",
     "Idea",

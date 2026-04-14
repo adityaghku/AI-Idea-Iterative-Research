@@ -40,6 +40,7 @@ class Signal(Base):
         String(50), nullable=False
     )  # problem_statement, complaint, unmet_need, repeated_pattern
     signal_metadata: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    pipeline_run_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False
     )
@@ -70,6 +71,12 @@ class Idea(Base):
     status: Mapped[str] = mapped_column(
         String(50), default="new", nullable=False
     )  # new, analysed, enriched, critiqued, finalized
+    pipeline_run_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    monetization_hypothesis: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    payer: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    pricing_model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    wedge: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    why_now: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     is_duplicate: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_crossed_out: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -221,6 +228,12 @@ class Analysis(Base):
         Integer, ForeignKey("ideas.id"), nullable=False, unique=True
     )
     score: Mapped[int] = mapped_column(Integer, nullable=False)  # 0-100
+    demand_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    gtm_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    build_risk_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    retention_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    monetization_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    validation_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     monetization_potential: Mapped[str] = mapped_column(String(50), nullable=False)
     complexity: Mapped[str] = mapped_column(String(50), nullable=False)
     tags: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
@@ -243,15 +256,19 @@ class Enrichment(Base):
     competitors: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
     competitor_details: Mapped[Optional[list[dict]]] = mapped_column(JSON, nullable=True)
     app_landscape: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    pricing_landscape: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     monetization_strategies: Mapped[list[str]] = mapped_column(
         ARRAY(String), default=list
     )
+    paid_alternatives: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
     tech_stack: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
     feasibility: Mapped[str] = mapped_column(String(50), nullable=False)
     confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     evidence_snippets: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
     risks: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
     go_to_market_hypotheses: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
+    validation_tests: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
+    switching_cost_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     additional_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False
@@ -272,12 +289,84 @@ class Critique(Base):
         ARRAY(String), default=list
     )
     technical_blockers: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
+    monetization_blockers: Mapped[list[str]] = mapped_column(
+        ARRAY(String), default=list
+    )
+    validation_blockers: Mapped[list[str]] = mapped_column(
+        ARRAY(String), default=list
+    )
     additional_concerns: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False
     )
 
     idea: Mapped["Idea"] = relationship("Idea", back_populates="critique")
+
+
+class PipelineRun(Base):
+    __tablename__ = "pipeline_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    iteration: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="running")
+    config_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class AgentRun(Base):
+    __tablename__ = "agent_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    pipeline_run_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("pipeline_runs.id"), nullable=True
+    )
+    agent_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    prompt_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    model_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="running")
+    input_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    output_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    error_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class FeedbackEvent(Base):
+    __tablename__ = "feedback_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    idea_id: Mapped[int] = mapped_column(Integer, ForeignKey("ideas.id"), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    reason_code: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    reason_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    learning_weight: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    tag: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+
+
+class PortfolioMemory(Base):
+    __tablename__ = "portfolio_memories"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    pipeline_run_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("pipeline_runs.id"), nullable=True
+    )
+    recurring_patterns: Mapped[Optional[list[dict]]] = mapped_column(JSON, nullable=True)
+    scout_guidance: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    synthesizer_guidance: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    analyser_guidance: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
 
 
 async_engine = create_async_engine(get_database_url(), echo=False, pool_pre_ping=True)
@@ -297,23 +386,7 @@ async def init_db() -> None:
     async with async_engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
-        await conn.execute(
-            text("ALTER TABLE enrichments ADD COLUMN IF NOT EXISTS competitor_details JSON")
-        )
-        await conn.execute(
-            text("ALTER TABLE enrichments ADD COLUMN IF NOT EXISTS confidence FLOAT")
-        )
-        await conn.execute(
-            text("ALTER TABLE enrichments ADD COLUMN IF NOT EXISTS evidence_snippets VARCHAR[] DEFAULT '{}'::varchar[]")
-        )
-        await conn.execute(
-            text("ALTER TABLE enrichments ADD COLUMN IF NOT EXISTS risks VARCHAR[] DEFAULT '{}'::varchar[]")
-        )
-        await conn.execute(
-            text(
-                "ALTER TABLE enrichments ADD COLUMN IF NOT EXISTS go_to_market_hypotheses VARCHAR[] DEFAULT '{}'::varchar[]"
-            )
-        )
+        await _apply_non_destructive_schema_upgrades(conn)
 
 
 async def close_db() -> None:
@@ -324,24 +397,47 @@ def init_db_sync() -> None:
     with sync_engine.begin() as conn:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         Base.metadata.create_all(conn)
-        conn.execute(
-            text("ALTER TABLE enrichments ADD COLUMN IF NOT EXISTS competitor_details JSON")
-        )
-        conn.execute(
-            text("ALTER TABLE enrichments ADD COLUMN IF NOT EXISTS confidence FLOAT")
-        )
-        conn.execute(
-            text("ALTER TABLE enrichments ADD COLUMN IF NOT EXISTS evidence_snippets VARCHAR[] DEFAULT '{}'::varchar[]")
-        )
-        conn.execute(
-            text("ALTER TABLE enrichments ADD COLUMN IF NOT EXISTS risks VARCHAR[] DEFAULT '{}'::varchar[]")
-        )
-        conn.execute(
-            text(
-                "ALTER TABLE enrichments ADD COLUMN IF NOT EXISTS go_to_market_hypotheses VARCHAR[] DEFAULT '{}'::varchar[]"
-            )
-        )
+        _apply_non_destructive_schema_upgrades_sync(conn)
 
 
 async def get_session() -> AsyncSession:
     return async_session_maker()
+
+
+def _upgrade_statements() -> list[str]:
+    return [
+        "ALTER TABLE signals ADD COLUMN IF NOT EXISTS pipeline_run_id INTEGER",
+        "ALTER TABLE ideas ADD COLUMN IF NOT EXISTS pipeline_run_id INTEGER",
+        "ALTER TABLE ideas ADD COLUMN IF NOT EXISTS monetization_hypothesis TEXT",
+        "ALTER TABLE ideas ADD COLUMN IF NOT EXISTS payer VARCHAR(255)",
+        "ALTER TABLE ideas ADD COLUMN IF NOT EXISTS pricing_model VARCHAR(100)",
+        "ALTER TABLE ideas ADD COLUMN IF NOT EXISTS wedge TEXT",
+        "ALTER TABLE ideas ADD COLUMN IF NOT EXISTS why_now TEXT",
+        "ALTER TABLE analyses ADD COLUMN IF NOT EXISTS demand_score INTEGER",
+        "ALTER TABLE analyses ADD COLUMN IF NOT EXISTS gtm_score INTEGER",
+        "ALTER TABLE analyses ADD COLUMN IF NOT EXISTS build_risk_score INTEGER",
+        "ALTER TABLE analyses ADD COLUMN IF NOT EXISTS retention_score INTEGER",
+        "ALTER TABLE analyses ADD COLUMN IF NOT EXISTS monetization_score INTEGER",
+        "ALTER TABLE analyses ADD COLUMN IF NOT EXISTS validation_score INTEGER",
+        "ALTER TABLE enrichments ADD COLUMN IF NOT EXISTS competitor_details JSON",
+        "ALTER TABLE enrichments ADD COLUMN IF NOT EXISTS confidence FLOAT",
+        "ALTER TABLE enrichments ADD COLUMN IF NOT EXISTS evidence_snippets VARCHAR[] DEFAULT '{}'::varchar[]",
+        "ALTER TABLE enrichments ADD COLUMN IF NOT EXISTS risks VARCHAR[] DEFAULT '{}'::varchar[]",
+        "ALTER TABLE enrichments ADD COLUMN IF NOT EXISTS go_to_market_hypotheses VARCHAR[] DEFAULT '{}'::varchar[]",
+        "ALTER TABLE enrichments ADD COLUMN IF NOT EXISTS pricing_landscape JSON",
+        "ALTER TABLE enrichments ADD COLUMN IF NOT EXISTS paid_alternatives VARCHAR[] DEFAULT '{}'::varchar[]",
+        "ALTER TABLE enrichments ADD COLUMN IF NOT EXISTS validation_tests VARCHAR[] DEFAULT '{}'::varchar[]",
+        "ALTER TABLE enrichments ADD COLUMN IF NOT EXISTS switching_cost_notes TEXT",
+        "ALTER TABLE critiques ADD COLUMN IF NOT EXISTS monetization_blockers VARCHAR[] DEFAULT '{}'::varchar[]",
+        "ALTER TABLE critiques ADD COLUMN IF NOT EXISTS validation_blockers VARCHAR[] DEFAULT '{}'::varchar[]",
+    ]
+
+
+async def _apply_non_destructive_schema_upgrades(conn) -> None:
+    for stmt in _upgrade_statements():
+        await conn.execute(text(stmt))
+
+
+def _apply_non_destructive_schema_upgrades_sync(conn) -> None:
+    for stmt in _upgrade_statements():
+        conn.execute(text(stmt))
