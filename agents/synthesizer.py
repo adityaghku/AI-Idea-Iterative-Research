@@ -5,6 +5,7 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import Idea, Signal
+from utils.agent_validators import validate_synthesizer_output
 from utils.llm_client import async_llm_complete_json
 from utils.logger import get_logger
 from utils.prompts_utils import load_prompt
@@ -34,7 +35,7 @@ class SynthesizerAgent:
         if self.portfolio_guidance:
             guidance_section = f"""
 
-## Portfolio Guidance
+Portfolio guidance:
 {self.portfolio_guidance}
 """
 
@@ -44,7 +45,13 @@ Signals:
 {signals_str}
 """
         logger.info("Converting %d signals to ideas...", len(signals))
-        result = await async_llm_complete_json(prompt, max_tokens=3000, temperature=0.5)
+        result = await async_llm_complete_json(
+            prompt,
+            max_tokens=2600,
+            temperature=0.35,
+            agent_name="synthesizer",
+            validator=lambda output: validate_synthesizer_output(output, len(signals)),
+        )
 
         ideas_data = result if isinstance(result, list) else result.get("ideas", [])
         logger.info("Generated %d raw ideas", len(ideas_data))

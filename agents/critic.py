@@ -5,6 +5,7 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import Critique, Idea
+from utils.agent_validators import validate_critic_output
 from utils.idea_context import format_business_context
 from utils.llm_client import async_llm_complete_json
 from utils.logger import get_logger
@@ -25,15 +26,19 @@ class CriticAgent:
         for idx, idea in enumerate(ideas, start=1):
             enrichment = idea.enrichment
             business_context = format_business_context(idea)
+            competitors = getattr(enrichment, "competitor_details", None) if enrichment else None
+            evidence = getattr(enrichment, "evidence_snippets", None) if enrichment else None
+            risks = getattr(enrichment, "risks", None) if enrichment else None
+            gtm = getattr(enrichment, "go_to_market_hypotheses", None) if enrichment else None
             idea_text = f"""Title: {idea.title}
 Problem: {idea.problem}
 Target User: {idea.target_user}
 Solution: {idea.solution}
-Competitors: {getattr(enrichment, 'competitor_details', None) if enrichment else 'N/A'}
+Competitors: {(competitors or [])[:3]}
 Monetization Strategies: {getattr(enrichment, 'monetization_strategies', None) if enrichment else 'N/A'}
-Evidence Snippets: {getattr(enrichment, 'evidence_snippets', None) if enrichment else 'N/A'}
-Risks: {getattr(enrichment, 'risks', None) if enrichment else 'N/A'}
-Go-to-Market Hypotheses: {getattr(enrichment, 'go_to_market_hypotheses', None) if enrichment else 'N/A'}
+Evidence Snippets: {(evidence or [])[:4]}
+Risks: {(risks or [])[:4]}
+Go-to-Market Hypotheses: {(gtm or [])[:3]}
 Enrichment Notes: {enrichment.additional_notes if enrichment else 'N/A'}"""
             if business_context:
                 idea_text += f"\n{business_context}"
@@ -45,7 +50,11 @@ Idea:
 """
             logger.info("Critic processing idea %d/%d: %s", idx, len(ideas), idea.title)
             result = await async_llm_complete_json(
-                prompt, max_tokens=2000, temperature=0.5
+                prompt,
+                max_tokens=1700,
+                temperature=0.25,
+                agent_name="critic",
+                validator=validate_critic_output,
             )
 
             critique_data = result if isinstance(result, dict) else {}

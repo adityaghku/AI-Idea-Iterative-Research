@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import Signal, SignalRelation
+from utils.agent_validators import validate_scout_output
 from utils.embeddings import cosine_similarity, text_to_embedding
 from utils.llm_client import LLMError, async_llm_complete_json
 from utils.logger import get_logger
@@ -68,7 +69,7 @@ def _normalize_memory_key(text: str) -> str:
     return " ".join(tokens[:24])
 
 
-def _build_memory_context(previous_signals: list[Signal], max_items: int = 12) -> str:
+def _build_memory_context(previous_signals: list[Signal], max_items: int = 8) -> str:
     """Summarize scout history so prompt context stays small."""
     if not previous_signals:
         return "No prior scout memory."
@@ -130,25 +131,25 @@ class ScoutAgent:
         )
         prompt = (
             f"{prompt_template}\n\n"
-            "## Run-specific search focus\n"
-            "Use these additional query angles this run to increase variability:\n"
+            "Run-specific search focus:\n"
             f"{rotation_queries}\n\n"
             "Diversity rule: avoid returning more than 2 signals from the same "
             "problem domain.\n\n"
             + (
-                f"## Portfolio Guidance\n{self.portfolio_guidance}\n\n"
+                f"Portfolio guidance:\n{self.portfolio_guidance}\n\n"
                 if self.portfolio_guidance
                 else ""
             )
-            + f"## Memory\n{memory_context}"
+            + f"Memory:\n{memory_context}"
         )
 
         try:
             result = await async_llm_complete_json(
                 prompt,
-                max_tokens=4000,
-                temperature=0.7,
+                max_tokens=3200,
+                temperature=0.5,
                 agent_name="scout",
+                validator=validate_scout_output,
             )
         except LLMError as e:
             logger.warning(
@@ -158,9 +159,10 @@ class ScoutAgent:
             try:
                 result = await async_llm_complete_json(
                     prompt,
-                    max_tokens=2500,
-                    temperature=0.6,
+                    max_tokens=2200,
+                    temperature=0.4,
                     agent_name="scout",
+                    validator=validate_scout_output,
                 )
             except LLMError as retry_error:
                 logger.error(

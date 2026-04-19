@@ -1,26 +1,19 @@
 # Portfolio Agent Prompt
 
-This stage is currently a deterministic portfolio summarizer, not an LLM prompt.
+This stage is deterministic, not LLM-driven.
 
-Its job is to read explicit crossed-out feedback reasons and produce compact guidance for the next run.
+## Goal
+
+- Summarize recurring crossed-out feedback into short next-run guidance.
 
 ## Inputs
 
-- Crossed-out feedback events with `reason_code` and optional `reason_text`
-- Current crossed-out state on ideas
+- Feedback events with `reason_code` and optional `reason_text`
+- The current crossed-out state of ideas
 
-## Output Goals
+## Principles
 
-- Identify only recurring rejection patterns worth learning from
-- Ignore one-off, emotional, or overly specific comments
-- Produce short guidance that helps:
-  - scout avoid weak problem areas
-  - synthesizer avoid weak business theses
-  - analyser calibrate skepticism
-
-## Output Principles
-
-- Prefer stable patterns over anecdotes
-- Do not quote raw user feedback directly into prompts
-- Focus on monetization, urgency, distribution, complexity, and platform risk
-- Keep guidance concise enough to inject into prompts
+- Learn only from recurring patterns, not one-off or emotional comments.
+- Produce concise guidance for scout, synthesizer, and analyser.
+- Focus on monetization, urgency, distribution, complexity, and platform risk.
+- Do not quote raw feedback directly into downstream prompts.

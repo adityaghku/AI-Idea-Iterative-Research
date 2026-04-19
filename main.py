@@ -19,11 +19,18 @@ except ImportError:
 from agents.analyser import AnalyserAgent
 from agents.critic import CriticAgent
 from agents.deep_dive import DeepDiveAgent
-from agents.librarian import LibrarianAgent
 from agents.portfolio import PortfolioAgent
 from agents.scout import ScoutAgent
 from agents.synthesizer import SynthesizerAgent
-from db import AgentRun, Idea, PipelineRun, PortfolioMemory, close_db, get_session, init_db
+from db import (
+    AgentRun,
+    Idea,
+    PipelineRun,
+    PortfolioMemory,
+    close_db,
+    get_session,
+    init_db,
+)
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from utils.logger import get_logger
@@ -44,10 +51,14 @@ def select_deep_dive_candidates(
     ranked = sorted(
         ideas,
         key=lambda idea: (
-            1
-            if getattr(getattr(idea, "analysis", None), "monetization_potential", None)
-            == "unknown"
-            else 0,
+            (
+                1
+                if getattr(
+                    getattr(idea, "analysis", None), "monetization_potential", None
+                )
+                == "unknown"
+                else 0
+            ),
             (
                 3 * _analysis_value(idea, "monetization_score")
                 + 2 * _analysis_value(idea, "validation_score")
@@ -87,7 +98,9 @@ def _summarize_result(result) -> str:
 
 
 async def _start_pipeline_run(session, iteration: int) -> PipelineRun:
-    run = PipelineRun(iteration=iteration, status="running", config_json={"iteration": iteration})
+    run = PipelineRun(
+        iteration=iteration, status="running", config_json={"iteration": iteration}
+    )
     session.add(run)
     await session.flush()
     return run
@@ -207,19 +220,24 @@ async def run_pipeline(iteration: int):
                 "deep_dive",
                 "deep_dive.md",
                 f"{len(top_ideas)} ideas",
-                lambda: asyncio.wait_for(deep_dive.run(session, top_ideas), timeout=900),
+                lambda: asyncio.wait_for(
+                    deep_dive.run(session, top_ideas), timeout=900
+                ),
             )
         except asyncio.TimeoutError:
-            logger.error("Deep Dive timed out after 900s - this step involves web searches which can take time")
+            logger.error(
+                "Deep Dive timed out after 900s - this step involves web searches which can take time"
+            )
             raise
         logger.info("Deep Dive complete: %d enrichments", len(enrichments))
 
         logger.info("Step 5: Critic - Critiquing enriched ideas...")
         critic = CriticAgent()
         top_idea_ids = [i.id for i in top_ideas]
-        stmt = select(Idea).where(Idea.id.in_(top_idea_ids)).options(
-            selectinload(Idea.analysis),
-            selectinload(Idea.enrichment)
+        stmt = (
+            select(Idea)
+            .where(Idea.id.in_(top_idea_ids))
+            .options(selectinload(Idea.analysis), selectinload(Idea.enrichment))
         )
         critic_ideas = (await session.execute(stmt)).scalars().all()
         logger.info("Critic input ideas prepared: %d", len(critic_ideas))
@@ -233,17 +251,18 @@ async def run_pipeline(iteration: int):
         )
         logger.info("Critic complete: %d critiques", len(critiques))
 
-        logger.info("Step 6: Librarian - Deduplicating...")
-        librarian = LibrarianAgent(threshold=0.7)
-        result = await _run_agent_step(
-            session,
-            pipeline_run,
-            "librarian",
-            "librarian.md",
-            "deduplicate active ideas",
-            lambda: librarian.run(session),
-        )
-        logger.info("Librarian complete: %s", result)
+        # Librarian step intentionally disabled for now.
+        # logger.info("Step 6: Librarian - Deduplicating...")
+        # librarian = LibrarianAgent(threshold=0.7)
+        # result = await _run_agent_step(
+        #     session,
+        #     pipeline_run,
+        #     "librarian",
+        #     "librarian.md",
+        #     "deduplicate active ideas",
+        #     lambda: librarian.run(session),
+        # )
+        # logger.info("Librarian complete: %s", result)
 
         logger.info("Step 7: Portfolio - Learning from feedback...")
         portfolio = PortfolioAgent()
@@ -262,13 +281,22 @@ async def run_pipeline(iteration: int):
         pipeline_run.completed_at = datetime.utcnow()
         await session.commit()
 
-        final_stmt = select(Idea).where(Idea.is_active == True).order_by(Idea.id.desc()).limit(10)
+        final_stmt = (
+            select(Idea)
+            .where(Idea.is_active == True)
+            .order_by(Idea.id.desc())
+            .limit(10)
+        )
         final_ideas = (await session.execute(final_stmt)).scalars().all()
-        
+
         final_ids = [i.id for i in final_ideas]
-        final_stmt = select(Idea).where(Idea.id.in_(final_ids)).options(selectinload(Idea.analysis))
+        final_stmt = (
+            select(Idea)
+            .where(Idea.id.in_(final_ids))
+            .options(selectinload(Idea.analysis))
+        )
         final_ideas = (await session.execute(final_stmt)).scalars().all()
-        
+
         logger.info("Top Ideas:")
         for idea in final_ideas:
             score = idea.analysis.score if idea.analysis else 0
@@ -293,9 +321,16 @@ def main():
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    failed_iterations: list[int] = []
     try:
         for i in range(1, args.max_iterations + 1):
-            loop.run_until_complete(run_pipeline(i))
+            try:
+                loop.run_until_complete(run_pipeline(i))
+            except Exception:
+                failed_iterations.append(i)
+                logger.exception(
+                    "Iteration %d failed; continuing to remaining iterations", i
+                )
             if i < args.max_iterations:
                 logger.info("Sleeping before next iteration...")
                 loop.run_until_complete(asyncio.sleep(2))
@@ -303,7 +338,14 @@ def main():
         loop.run_until_complete(close_db())
         loop.close()
 
-    logger.info("All %d iteration(s) complete!", args.max_iterations)
+    if failed_iterations:
+        logger.warning(
+            "Completed %d iteration(s) with failures in iteration(s): %s",
+            args.max_iterations,
+            ", ".join(str(iteration) for iteration in failed_iterations),
+        )
+    else:
+        logger.info("All %d iteration(s) complete!", args.max_iterations)
 
 
 if __name__ == "__main__":

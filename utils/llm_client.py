@@ -7,7 +7,7 @@ import logging
 import os
 import re
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +36,40 @@ def _log_llm_structured(event: str, prompt: str, response: str = "", **kwargs) -
 
 class LLMError(Exception):
     pass
+
+
+Validator = Callable[[Any], tuple[bool, str]]
+
+
+def _response_starts_with_json(text: str) -> bool:
+    stripped = text.lstrip()
+    return stripped.startswith("{") or stripped.startswith("[")
+
+
+def _looks_like_plan_mode(text: str) -> bool:
+    stripped = text.strip().lower()
+    if not stripped:
+        return False
+    plan_patterns = (
+        r"^(let me|i will|i'll|we should|i need to)\b",
+        r"^here'?s\b.*\bplan\b",
+        r"^plan\s*:",
+        r"^first[,:\s]",
+        r"^step\s*1\b",
+    )
+    return any(re.search(pattern, stripped) for pattern in plan_patterns)
+
+
+def _validate_output(
+    result: Any,
+    validator: Optional[Validator],
+) -> tuple[bool, str]:
+    if validator is None:
+        return True, ""
+    try:
+        return validator(result)
+    except Exception as exc:
+        return False, f"validator raised {type(exc).__name__}: {exc}"
 
 
 def _extract_json_value(text: str) -> Any | None:
@@ -314,6 +348,7 @@ class OpenCodeLLMClient:
         *,
         agent_name: Optional[str] = None,
         pass_number: Optional[int] = None,
+        validator: Optional[Validator] = None,
     ) -> Any:
         logger.info(
             "=== LLM complete_json START (model=%s, max_tokens=%s, temp=%s) ===",
@@ -324,28 +359,27 @@ class OpenCodeLLMClient:
         logger.info("Prompt length: %s chars", len(prompt))
         logger.info("System: %s...", str(system)[:200] if system else "None")
 
-        json_prefix = (
-            "You must respond with ONLY valid JSON. No markdown, no explanations, "
-            "no conversational text.\n\n"
+        execution_contract = (
+            "Output contract:\n"
+            "- Do not ask clarifying questions.\n"
+            "- Do not request more input.\n"
+            "- If details are ambiguous, make the best reasonable assumptions and proceed.\n"
+            "- Do not include planning text, preambles, headings, or markdown.\n"
+            "- Return ONLY raw JSON.\n"
+            "- The first non-whitespace character must be '{' or '['."
         )
-        json_system = (system or "") + (
-            "\n\nCRITICAL: Respond with ONLY valid JSON. No conversational text, "
-            "no explanations, no markdown. Just raw JSON."
-        )
-        full_prompt = json_prefix + prompt
+        json_system = f"{system}\n\n{execution_contract}" if system else execution_contract
+        full_prompt = prompt
         logger.info("Full prompt length: %s chars", len(full_prompt))
-        if "json" not in prompt.lower():
-            full_prompt = (
-                full_prompt + "\n\nRespond with valid JSON only. No other text."
-            )
 
         last_response = ""
+        retry_suffix = ""
 
         for attempt in range(max_retries):
             t0 = time.monotonic()
             try:
                 response = await self.complete(
-                    full_prompt,
+                    full_prompt + retry_suffix,
                     json_system,
                     max_tokens,
                     temperature,
@@ -368,6 +402,32 @@ class OpenCodeLLMClient:
                 raise
             last_response = response
 
+            if not _response_starts_with_json(response):
+                looks_like_plan = _looks_like_plan_mode(response)
+                violation_reason = (
+                    "planning/preamble text detected"
+                    if looks_like_plan
+                    else "response does not start with JSON"
+                )
+                _log_llm_structured(
+                    "llm_contract_violation",
+                    prompt=prompt,
+                    response=response,
+                    attempt=attempt + 1,
+                    max_retries=max_retries,
+                    agent_name=agent_name,
+                    pass_number=pass_number,
+                    reason=violation_reason,
+                )
+                if attempt < max_retries - 1:
+                    retry_suffix = (
+                        "\n\nPrevious response violated the output contract. "
+                        "Retry and output ONLY raw JSON. Do not include any prefix text. "
+                        "Your first non-whitespace character must be '{' or '['."
+                    )
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                    continue
+
             _log_llm_structured(
                 "llm_response_received",
                 prompt=prompt,
@@ -383,6 +443,27 @@ class OpenCodeLLMClient:
             try:
                 result = json.loads(response)
                 latency_ms = int((time.monotonic() - t0) * 1000)
+                is_valid, validation_reason = _validate_output(result, validator)
+                if not is_valid:
+                    _log_llm_structured(
+                        "llm_schema_validation_failed",
+                        prompt=prompt,
+                        response=response,
+                        agent_name=agent_name,
+                        pass_number=pass_number,
+                        attempt=attempt + 1,
+                        latency_ms=latency_ms,
+                        reason=validation_reason,
+                    )
+                    if attempt < max_retries - 1:
+                        retry_suffix = (
+                            "\n\nPrevious response had invalid JSON structure. "
+                            f"Validation error: {validation_reason}. "
+                            "Retry and output a complete raw JSON response matching the schema exactly."
+                        )
+                        await asyncio.sleep(0.5 * (attempt + 1))
+                        continue
+                    raise LLMError(f"Schema validation failed: {validation_reason}")
                 logger.info("=== LLM complete_json SUCCESS ===")
                 parsed_len = len(result) if isinstance(result, (list, dict)) else "N/A"
                 logger.info(
@@ -410,6 +491,27 @@ class OpenCodeLLMClient:
                 extracted = _extract_json_value(response)
                 if extracted is not None:
                     latency_ms = int((time.monotonic() - t0) * 1000)
+                    is_valid, validation_reason = _validate_output(extracted, validator)
+                    if not is_valid:
+                        _log_llm_structured(
+                            "llm_schema_validation_failed",
+                            prompt=prompt,
+                            response=response,
+                            agent_name=agent_name,
+                            pass_number=pass_number,
+                            attempt=attempt + 1,
+                            latency_ms=latency_ms,
+                            reason=validation_reason,
+                        )
+                        if attempt < max_retries - 1:
+                            retry_suffix = (
+                                "\n\nPrevious response had invalid JSON structure. "
+                                f"Validation error: {validation_reason}. "
+                                "Retry and output a complete raw JSON response matching the schema exactly."
+                            )
+                            await asyncio.sleep(0.5 * (attempt + 1))
+                            continue
+                        raise LLMError(f"Schema validation failed: {validation_reason}")
                     logger.info("=== LLM complete_json SUCCESS (raw_decode) ===")
                     _log_llm_structured(
                         "llm_call_metrics",
@@ -431,26 +533,36 @@ class OpenCodeLLMClient:
                 )
                 if json_match:
                     try:
-                        return json.loads(json_match.group(1))
+                        parsed = json.loads(json_match.group(1))
+                        is_valid, validation_reason = _validate_output(parsed, validator)
+                        if is_valid:
+                            return parsed
                     except json.JSONDecodeError:
                         extracted = _extract_json_value(json_match.group(1))
                         if extracted is not None:
-                            logger.info(
-                                "=== LLM complete_json SUCCESS (fence+raw_decode) ==="
-                            )
-                            return extracted
+                            is_valid, validation_reason = _validate_output(extracted, validator)
+                            if is_valid:
+                                logger.info(
+                                    "=== LLM complete_json SUCCESS (fence+raw_decode) ==="
+                                )
+                                return extracted
 
                 json_match = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", response)
                 if json_match:
                     try:
-                        return json.loads(json_match.group(1))
+                        parsed = json.loads(json_match.group(1))
+                        is_valid, validation_reason = _validate_output(parsed, validator)
+                        if is_valid:
+                            return parsed
                     except json.JSONDecodeError:
                         extracted = _extract_json_value(json_match.group(1))
                         if extracted is not None:
-                            logger.info(
-                                "=== LLM complete_json SUCCESS (bracket+raw_decode) ==="
-                            )
-                            return extracted
+                            is_valid, validation_reason = _validate_output(extracted, validator)
+                            if is_valid:
+                                logger.info(
+                                    "=== LLM complete_json SUCCESS (bracket+raw_decode) ==="
+                                )
+                                return extracted
 
                 _log_llm_structured(
                     "llm_json_parse_failed",
@@ -520,9 +632,17 @@ async def _llm_complete_json_async(
     max_tokens: int = 2000,
     temperature: float = 0.7,
     model: Optional[str] = None,
+    validator: Optional[Validator] = None,
 ) -> Any:
     client = await get_llm_client()
-    return await client.complete_json(prompt, system, max_tokens, temperature, model)
+    return await client.complete_json(
+        prompt,
+        system,
+        max_tokens,
+        temperature,
+        model,
+        validator=validator,
+    )
 
 
 async def async_llm_complete_json(
@@ -535,6 +655,7 @@ async def async_llm_complete_json(
     *,
     agent_name: Optional[str] = None,
     pass_number: Optional[int] = None,
+    validator: Optional[Validator] = None,
 ) -> Any:
     client = OpenCodeLLMClient()
     try:
@@ -547,6 +668,7 @@ async def async_llm_complete_json(
             max_retries,
             agent_name=agent_name,
             pass_number=pass_number,
+            validator=validator,
         )
     finally:
         await client.disconnect()

@@ -5,6 +5,7 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import Analysis, Idea
+from utils.agent_validators import validate_analyser_output
 from utils.idea_context import format_business_context
 from utils.llm_client import async_llm_complete_json
 from utils.logger import get_logger
@@ -45,7 +46,7 @@ Solution: {idea.solution}"""
             if self.portfolio_guidance:
                 guidance_section = f"""
 
-## Portfolio Guidance
+Portfolio guidance:
 {self.portfolio_guidance}
 """
 
@@ -56,7 +57,11 @@ Idea:
 """
             logger.info("Analyser processing idea %d/%d: %s", idx, len(ideas), idea.title)
             result = await async_llm_complete_json(
-                prompt, max_tokens=2000, temperature=0.3
+                prompt,
+                max_tokens=1700,
+                temperature=0.2,
+                agent_name="analyser",
+                validator=validate_analyser_output,
             )
 
             analysis_data = result if isinstance(result, dict) else {}

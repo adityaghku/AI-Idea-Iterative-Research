@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import Enrichment, Idea
+from utils.agent_validators import validate_deep_dive_output
 from utils.idea_context import format_business_context
 from utils.llm_client import async_llm_complete_json
 from utils.logger import get_logger
@@ -20,7 +21,7 @@ logger = get_logger(__name__)
 class DeepDiveAgent:
     """Agent 4: Enriches top ideas with competitors, app landscape, tech stack."""
 
-    PASSES = 3
+    PASSES = 2
 
     async def run(self, session: AsyncSession, ideas: list[Idea]) -> list[Enrichment]:
         """Run deep dive to enrich top ideas."""
@@ -45,9 +46,12 @@ Solution: {idea.solution}"""
             pass_outputs: list[dict] = []
             previous_output: dict = {}
             for pass_number in range(1, self.PASSES + 1):
-                prior_context = "No prior pass outputs."
+                prior_context = ""
                 if previous_output:
-                    prior_context = json.dumps(previous_output, ensure_ascii=True)
+                    prior_context = (
+                        "Prior accepted output (JSON):\n"
+                        f"{json.dumps(previous_output, ensure_ascii=True)}\n"
+                    )
                 refinement_directive = self._build_refinement_directive(
                     previous_output=previous_output,
                     pass_number=pass_number,
@@ -59,18 +63,17 @@ Idea:
 {idea_text}
 
 Deep-dive pass: {pass_number} of {self.PASSES}
-Prior accepted output (JSON):
-{prior_context}
-Refinement directive:
+{prior_context}Pass guidance:
 {refinement_directive}
 """
                 logger.debug("Enriching pass %d/%d: %s", pass_number, self.PASSES, idea.title)
                 result = await async_llm_complete_json(
                     prompt,
-                    max_tokens=3000,
-                    temperature=0.3,
+                    max_tokens=2400,
+                    temperature=0.2,
                     agent_name="deep_dive",
                     pass_number=pass_number,
+                    validator=validate_deep_dive_output,
                 )
                 pass_candidate = result if isinstance(result, dict) else {}
                 gated_output, issues = self._apply_quality_gates(
@@ -196,18 +199,18 @@ Refinement directive:
     def _build_refinement_directive(self, previous_output: dict, pass_number: int) -> str:
         if pass_number == 1:
             return (
-                "Generate a strong baseline output with high-confidence competitor and "
-                "evidence coverage."
+                "Return one complete JSON object with high-confidence competitors, pricing, "
+                "evidence, risks, and validation tests."
             )
         gaps = self._identify_gaps(previous_output)
         if not gaps:
             return (
-                "Refine quality only: tighten evidence quality, remove weak claims, and "
-                "improve competitor summaries/URLs."
+                "Return a complete JSON object again. Tighten weak evidence, remove weak claims, "
+                "and improve competitor summaries and URLs."
             )
         return (
-            "Improve only missing/weak areas from prior output. Do not repeat unchanged sections. "
-            f"Priority gaps: {', '.join(gaps)}."
+            "Return a complete JSON object again. Improve weak or missing areas first while "
+            f"preserving strong prior fields. Priority gaps: {', '.join(gaps)}."
         )
 
     def _identify_gaps(self, output: dict) -> list[str]:

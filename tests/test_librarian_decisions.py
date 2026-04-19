@@ -23,6 +23,17 @@ def _idea(idea_id: int, title: str) -> SimpleNamespace:
     )
 
 
+def test_chunk_pairs_splits_large_batches():
+    agent = LibrarianAgent()
+    pairs = [{"pair_index": i} for i in range(9)]
+
+    chunks = agent._chunk_pairs(pairs, chunk_size=4)
+
+    assert [len(chunk) for chunk in chunks] == [4, 4, 1]
+    assert chunks[0][0]["pair_index"] == 0
+    assert chunks[-1][0]["pair_index"] == 8
+
+
 @pytest.mark.asyncio
 async def test_apply_decisions_uses_pair_index_for_multi_pair_merge():
     agent = LibrarianAgent()

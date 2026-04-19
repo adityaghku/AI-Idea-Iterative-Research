@@ -336,3 +336,38 @@ def test_embedding_text_includes_business_fields_when_present():
     assert "Agencies pay monthly to reduce admin time." in text
     assert "Agency owner" in text
     assert "Meeting follow-up workflow" in text
+
+
+def test_main_continues_remaining_iterations_after_one_failure(monkeypatch):
+    import main
+
+    completed_iterations: list[int] = []
+    sleep_calls: list[float] = []
+    close_db_calls = 0
+
+    async def fake_run_pipeline(iteration: int):
+        completed_iterations.append(iteration)
+        if iteration == 2:
+            raise RuntimeError("iteration failed")
+
+    async def fake_close_db():
+        nonlocal close_db_calls
+        close_db_calls += 1
+
+    async def fake_sleep(delay: float):
+        sleep_calls.append(delay)
+
+    monkeypatch.setattr(main, "run_pipeline", fake_run_pipeline)
+    monkeypatch.setattr(main, "close_db", fake_close_db)
+    monkeypatch.setattr(main.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(
+        main.argparse.ArgumentParser,
+        "parse_args",
+        lambda self: SimpleNamespace(max_iterations=3),
+    )
+
+    main.main()
+
+    assert completed_iterations == [1, 2, 3]
+    assert sleep_calls == [2, 2]
+    assert close_db_calls == 1

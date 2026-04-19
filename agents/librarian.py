@@ -6,6 +6,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import Idea, IdeaEmbedding, IdeaRelation
+from utils.agent_validators import validate_librarian_output
 from utils.embeddings import (
     EMBEDDING_MODEL_NAME,
     EMBEDDING_MODEL_VERSION,
@@ -22,6 +23,8 @@ logger = get_logger(__name__)
 
 class LibrarianAgent:
     """Agent 6: Deduplicates ideas with embeddings + LLM decisions."""
+
+    MAX_PAIRS_PER_CALL = 4
 
     def __init__(self, threshold: float = 0.7):
         self.threshold = threshold
@@ -137,59 +140,49 @@ class LibrarianAgent:
             "threshold": self.threshold,
         }
 
+    def _chunk_pairs(self, pairs: list[dict], chunk_size: int | None = None) -> list[list[dict]]:
+        size = chunk_size or self.MAX_PAIRS_PER_CALL
+        return [pairs[i : i + size] for i in range(0, len(pairs), size)]
+
     async def _get_llm_decisions(self, pairs: list[dict]) -> list[dict]:
         """Send potential duplicate pairs to LLM for merge decisions."""
         prompt_template = load_prompt("librarian.md")
+        decisions: list[dict] = []
 
-        pair_texts = []
-        for i, pair in enumerate(pairs):
-            s = pair["source"]
-            t = pair["target"]
-            sim = pair["similarity"]
-            pair_texts.append(f"""
-Pair {i + 1} (pair_index: {i}, similarity: {sim:.2f}):
+        for chunk in self._chunk_pairs(pairs):
+            pair_texts = []
+            for pair in chunk:
+                s = pair["source"]
+                t = pair["target"]
+                sim = pair["similarity"]
+                pair_texts.append(
+                    f"""Pair {pair['pair_index']} (similarity: {sim:.2f})
+Idea A: id={s.id}; title={s.title}; problem={s.problem}; target_user={s.target_user}; solution={s.solution}; monetization_hypothesis={getattr(s, 'monetization_hypothesis', None)}; payer={getattr(s, 'payer', None)}; pricing_model={getattr(s, 'pricing_model', None)}; wedge={getattr(s, 'wedge', None)}; why_now={getattr(s, 'why_now', None)}
+Idea B: id={t.id}; title={t.title}; problem={t.problem}; target_user={t.target_user}; solution={t.solution}; monetization_hypothesis={getattr(t, 'monetization_hypothesis', None)}; payer={getattr(t, 'payer', None)}; pricing_model={getattr(t, 'pricing_model', None)}; wedge={getattr(t, 'wedge', None)}; why_now={getattr(t, 'why_now', None)}"""
+                )
 
-Idea A (ID: {s.id}):
-- Title: {s.title}
-- Problem: {s.problem}
-- Target User: {s.target_user}
-- Solution: {s.solution}
-- Monetization Hypothesis: {getattr(s, 'monetization_hypothesis', None)}
-- Payer: {getattr(s, 'payer', None)}
-- Pricing Model: {getattr(s, 'pricing_model', None)}
-- Wedge: {getattr(s, 'wedge', None)}
-- Why Now: {getattr(s, 'why_now', None)}
+            prompt = f"""{prompt_template}
 
-Idea B (ID: {t.id}):
-- Title: {t.title}
-- Problem: {t.problem}
-- Target User: {t.target_user}
-- Solution: {t.solution}
-- Monetization Hypothesis: {getattr(t, 'monetization_hypothesis', None)}
-- Payer: {getattr(t, 'payer', None)}
-- Pricing Model: {getattr(t, 'pricing_model', None)}
-- Wedge: {getattr(t, 'wedge', None)}
-- Why Now: {getattr(t, 'why_now', None)}
-""")
-
-        prompt = f"""{prompt_template}
-
-Review the following {len(pairs)} potential duplicate pairs:
-
-{''.join(pair_texts)}
-
-Output your decisions as a JSON array with one entry per pair.
+Potential duplicate pairs:
+{chr(10).join(pair_texts)}
 """
 
-        try:
-            result = await async_llm_complete_json(prompt, max_tokens=4000, temperature=0.3)
-            if isinstance(result, list):
-                return result
-            logger.warning("LLM returned non-list result: %s", type(result))
-            return []
-        except Exception as e:
-            logger.error("Failed to get LLM decisions: %s", e)
-            return []
+            try:
+                result = await async_llm_complete_json(
+                    prompt,
+                    max_tokens=2200,
+                    temperature=0.2,
+                    agent_name="librarian",
+                    validator=lambda output, pair_count=len(chunk): validate_librarian_output(output, pair_count),
+                )
+                if isinstance(result, list):
+                    decisions.extend(result)
+                    continue
+                logger.warning("LLM returned non-list result: %s", type(result))
+            except Exception as e:
+                logger.error("Failed to get LLM decisions for chunk: %s", e)
+
+        return decisions
 
     async def _refresh_embedding(self, session: AsyncSession, idea: Idea) -> None:
         """Refresh embedding when merged content changes."""
