@@ -1,0 +1,88 @@
+{
+  "competitors": [
+    {
+      "name": "Deque Systems (Axe DevTools for Mobile)",
+      "summary": "Enterprise-grade automated accessibility testing platform for iOS, Android, and React Native apps with CI/CD integration, linting, and zero-false-positive claims.",
+      "url": "https://www.deque.com/axe/devtools/mobile-accessibility-testing/"
+    },
+    {
+      "name": "AccessibilityChecker.org",
+      "summary": "Web-focused accessibility compliance platform with automated scanning, monitoring, and AI-assisted fixes, offering clear SaaS pricing tiers for websites.",
+      "url": "https://www.accessibilitychecker.org/"
+    },
+    {
+      "name": "Apple Accessibility Framework & Xcode",
+      "summary": "Native platform tools and APIs (VoiceOver, Dynamic Type, contrast APIs) plus Xcode's Accessibility Inspector for manual testing, provided free to developers.",
+      "url": "https://developer.apple.com/documentation/accessibility"
+    },
+    {
+      "name": "Lighthouse (for web)",
+      "summary": "Google's open-source automated tool for web performance, accessibility, and best practices, integrated into Chrome DevTools and CI pipelines.",
+      "url": "https://developer.chrome.com/docs/lighthouse/overview"
+    },
+    {
+      "name": "axe-core (open source)",
+      "summary": "The open-source engine powering many commercial accessibility testing tools, available as libraries for web but not native mobile apps.",
+      "url": "https://github.com/dequelabs/axe-core"
+    }
+  ],
+  "app_landscape": "The market is segmented between enterprise B2B compliance platforms (Deque) with opaque pricing and sales-driven models, and more accessible web-focused SaaS tools (AccessibilityChecker.org) with transparent subscription pricing. For native iOS/macOS app testing specifically, there is no dominant, dedicated, standalone tool positioned for individual developers or small teams—most solutions are either part of larger enterprise suites or require manual use of Xcode's built-in Accessibility Inspector. Apple's strong emphasis on accessibility in App Review creates consistent demand, but the friction of manual testing leaves a gap for automation.",
+  "pricing_landscape": {
+    "enterprise_b2b": "Likely $5,000–$20,000+ annually per seat or per app, based on typical enterprise DevTools/SaaS pricing (e.g., Sentry, DataDog). Deque uses 'Request a Demo' model, no public pricing.",
+    "web_saas_anchor": "AccessibilityChecker.org offers: Lite ($69/domain/month, 25 URLs), Pro ($149/domain/month, 100 URLs), Growth ($249/domain/month, 500 URLs), with annual discounts (~20%). This anchors a subscription model for compliance tools.",
+    "developer_tools": "Many indie macOS utilities price between $29–$99 one-time or $4.99–$19.99/month. Xcode plugins and developer tools often use one-time purchases or low monthly subscriptions.",
+    "recommended_range": "One-time: $49–$149; Subscription: $9.99–$29.99/month or $79–$199/year; Freemium: free scan for one app, paid for unlimited apps/team features."
+  },
+  "monetization_strategies": [
+    "Freemium: Free tier for scanning one app with basic report; paid tier unlocks unlimited apps, advanced checks (contrast, focus order), team collaboration, and CI/CD integration.",
+    "Subscription SaaS: Monthly/annual billing per user or per app, aligned with web compliance tool pricing psychology.",
+    "One-time purchase: Traditional macOS utility model, appealing to indie developers who dislike subscriptions, with major version upgrades.",
+    "Team/Enterprise tiers: Higher pricing for teams, with features like shared violation databases, Slack/MS Teams integration, and priority support.",
+    "Marketplace for fix templates: Optional in-app purchases for pre-built SwiftUI/UIKit code snippets to automatically fix common violations."
+  ],
+  "paid_alternatives": [
+    "Deque Axe DevTools for Mobile (enterprise pricing, likely $5k+/year)",
+    "AccessibilityChecker.org for web apps ($828–$2,988/year)",
+    "Hiring accessibility consultants ($150–$300/hour)",
+    "Manual testing by QA engineers (internal cost)"
+  ],
+  "tech_stack": [
+    "Swift/SwiftUI for native macOS/iOS UI",
+    "Swift Package for core scanning engine (could be open-sourced)",
+    "AppKit/UIKit Accessibility APIs for programmatic inspection",
+    "Core Graphics for contrast ratio calculation from screenshots",
+    "Swift Concurrency for parallel scanning",
+    "SwiftData for local violation storage",
+    "StoreKit 2 for subscriptions & one-time purchases",
+    "Xcode Source Editor Extension for inline fix suggestions"
+  ],
+  "feasibility": "high",
+  "confidence": 0.75,
+  "evidence_snippets": [
+    "Deque's 'Axe DevTools for Mobile' page explicitly lists 'iOS and Android native apps', 'React Native', and 'zero false positives' as key features, confirming demand for automated mobile testing.",
+    "AccessibilityChecker.org pricing page shows clear willingness to pay for accessibility compliance: $69–$249/month per domain for web scanning.",
+    "Apple's App Store Review Guidelines require apps to 'provide an accessible experience', and the Accessibility Inspector is a built-in Xcode tool, indicating platform enforcement and developer need.",
+    "Web search for 'iOS accessibility testing automated' returns many tutorials and Stack Overflow questions, signaling developer pain points and search volume."
+  ],
+  "risks": [
+    "Apple could enhance Xcode's Accessibility Inspector with automated scanning, making a third-party tool redundant.",
+    "Low awareness among developers about accessibility requirements until their app is rejected by App Review.",
+    "Enterprise sales cycle may be long if targeting larger teams; direct competition with Deque's established sales motion.",
+    "Technical complexity of accurately detecting some violations (e.g., semantic meaning of custom UI) could lead to false positives/negatives.",
+    "Monetization friction: developers expect free tools for compliance (like Lighthouse) and may resist paying."
+  ],
+  "go_to_market_hypotheses": [
+    "Target indie iOS/macOS developers via Twitter, iOS dev newsletters, and Swift forums, emphasizing App Store compliance and time savings.",
+    "Leverage App Store rejections due to accessibility as a trigger—create content around 'How to fix VoiceOver label rejection'.",
+    "Open-source the core scanning engine to build credibility and adoption, monetize via GUI app, team features, and fix templates.",
+    "Partner with design agencies and app studios that need to ensure accessibility for client projects."
+  ],
+  "validation_tests": [
+    "Create a landing page with waitlist; measure sign-up conversion from iOS dev communities.",
+    "Build a minimal CLI tool that scans a demo app and outputs violations; share on GitHub and track stars/forks.",
+    "Interview 10 iOS developers who have experienced App Store rejections related to accessibility.",
+    "Run a paid Twitter/LinkedIn ad targeting iOS developers with the value prop 'Avoid App Store rejections—automate accessibility testing' and measure CTR/cost per lead."
+  ],
+  "switching_cost_notes": "Switching from manual Xcode Accessibility Inspector to an automated tool is low—just install and run. However, convincing developers to pay when a free (manual) alternative exists requires demonstrating significant time savings and compliance assurance. Switching from enterprise tools like Deque is high due to contract lock-in and integrated workflows.",
+  "additional_notes": "The search rate limit prevented exhaustive discovery of all mobile-specific competitors. However, the data from Deque and AccessibilityChecker.org provides strong anchors for enterprise and SaaS pricing. The gap for a dedicated, native, indie‑developer‑focused tool appears real. Confidence is 0.75 due to solid evidence of demand and pricing willingness, tempered by the risk of platform expansion and monetization friction."
+}

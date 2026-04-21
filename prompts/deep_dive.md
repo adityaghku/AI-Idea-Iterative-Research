@@ -17,6 +17,7 @@ Role: enrich one idea with grounded market and monetization research.
 
 ## Research Heuristics
 
+- Use the `websearch` tool to find competitors, pricing references, reviews, and substitute workflows, then use the `webfetch` tool to inspect the most relevant sources before writing the JSON output.
 - Prefer real competitors, substitute behaviors, and pricing anchors over generic market claims.
 - Include evidence that helps judge demand, switching costs, go-to-market, and monetization.
 - Recommend tech that is realistic for the product shape, not aspirational.

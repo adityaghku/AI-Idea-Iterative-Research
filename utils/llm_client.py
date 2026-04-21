@@ -60,6 +60,46 @@ def _looks_like_plan_mode(text: str) -> bool:
     return any(re.search(pattern, stripped) for pattern in plan_patterns)
 
 
+def _looks_like_forbidden_worker_behavior(text: str) -> bool:
+    stripped = text.strip().lower()
+    if not stripped:
+        return False
+    forbidden_patterns = (
+        r"show it to you in a web browser",
+        r"opening a local url",
+        r"want to try it\?",
+        r"\bi(?:'ll| will) inspect the codebase\b",
+        r"\bi(?:'ll| will) read (?:the )?(?:files|code|repository)\b",
+        r"\blet me (?:inspect|read|check) (?:the )?(?:codebase|files|repository)\b",
+        r"\bcheck the repository\b",
+        r"\bread a few files\b",
+        r"\bmockups?, diagrams?, comparisons?\b",
+    )
+    return any(re.search(pattern, stripped) for pattern in forbidden_patterns)
+
+
+def _build_worker_contract(tool_policy: Optional[str]) -> str:
+    lines = [
+        "Worker mode.",
+        "- Do not ask clarifying questions.",
+        "- Do not request more input.",
+        "- If details are ambiguous, make the best reasonable assumptions and proceed.",
+        "- Do not include planning text, preambles, headings, markdown, or commentary.",
+        "- Do not read local files, source code, prompts, docs, or inspect the repository.",
+        "- Do not offer browser flows, mockups, diagrams, comparisons, or local-URL workflows.",
+        "- Do not mention tool usage in the final output.",
+        "- Return ONLY raw JSON.",
+        "- The first non-whitespace character must be '{' or '['.",
+    ]
+    if tool_policy == "web_only":
+        lines.append(
+            "- If tools are needed, use only the `websearch` and `webfetch` tools."
+        )
+    elif tool_policy == "no_tools":
+        lines.append("- Do not use any tools.")
+    return "\n".join(lines)
+
+
 def _validate_output(
     result: Any,
     validator: Optional[Validator],
@@ -349,6 +389,7 @@ class OpenCodeLLMClient:
         agent_name: Optional[str] = None,
         pass_number: Optional[int] = None,
         validator: Optional[Validator] = None,
+        tool_policy: Optional[str] = None,
     ) -> Any:
         logger.info(
             "=== LLM complete_json START (model=%s, max_tokens=%s, temp=%s) ===",
@@ -359,16 +400,10 @@ class OpenCodeLLMClient:
         logger.info("Prompt length: %s chars", len(prompt))
         logger.info("System: %s...", str(system)[:200] if system else "None")
 
-        execution_contract = (
-            "Output contract:\n"
-            "- Do not ask clarifying questions.\n"
-            "- Do not request more input.\n"
-            "- If details are ambiguous, make the best reasonable assumptions and proceed.\n"
-            "- Do not include planning text, preambles, headings, or markdown.\n"
-            "- Return ONLY raw JSON.\n"
-            "- The first non-whitespace character must be '{' or '['."
+        execution_contract = _build_worker_contract(tool_policy)
+        json_system = (
+            f"{system}\n\n{execution_contract}" if system else execution_contract
         )
-        json_system = f"{system}\n\n{execution_contract}" if system else execution_contract
         full_prompt = prompt
         logger.info("Full prompt length: %s chars", len(full_prompt))
 
@@ -402,13 +437,18 @@ class OpenCodeLLMClient:
                 raise
             last_response = response
 
-            if not _response_starts_with_json(response):
-                looks_like_plan = _looks_like_plan_mode(response)
-                violation_reason = (
-                    "planning/preamble text detected"
-                    if looks_like_plan
-                    else "response does not start with JSON"
-                )
+            if (
+                not _response_starts_with_json(response)
+                or _looks_like_plan_mode(response)
+                or _looks_like_forbidden_worker_behavior(response)
+            ):
+                violation_reasons: list[str] = []
+                if not _response_starts_with_json(response):
+                    violation_reasons.append("response does not start with JSON")
+                if _looks_like_plan_mode(response):
+                    violation_reasons.append("planning/preamble text detected")
+                if _looks_like_forbidden_worker_behavior(response):
+                    violation_reasons.append("forbidden worker behavior detected")
                 _log_llm_structured(
                     "llm_contract_violation",
                     prompt=prompt,
@@ -417,11 +457,13 @@ class OpenCodeLLMClient:
                     max_retries=max_retries,
                     agent_name=agent_name,
                     pass_number=pass_number,
-                    reason=violation_reason,
+                    reason="; ".join(violation_reasons),
                 )
                 if attempt < max_retries - 1:
                     retry_suffix = (
                         "\n\nPrevious response violated the output contract. "
+                        "Forbidden behaviors include planning text, browser or local-URL offers, "
+                        "codebase exploration, file reading, and tool discussion. "
                         "Retry and output ONLY raw JSON. Do not include any prefix text. "
                         "Your first non-whitespace character must be '{' or '['."
                     )
@@ -633,6 +675,7 @@ async def _llm_complete_json_async(
     temperature: float = 0.7,
     model: Optional[str] = None,
     validator: Optional[Validator] = None,
+    tool_policy: Optional[str] = None,
 ) -> Any:
     client = await get_llm_client()
     return await client.complete_json(
@@ -642,6 +685,7 @@ async def _llm_complete_json_async(
         temperature,
         model,
         validator=validator,
+        tool_policy=tool_policy,
     )
 
 
@@ -656,6 +700,7 @@ async def async_llm_complete_json(
     agent_name: Optional[str] = None,
     pass_number: Optional[int] = None,
     validator: Optional[Validator] = None,
+    tool_policy: Optional[str] = None,
 ) -> Any:
     client = OpenCodeLLMClient()
     try:
@@ -669,6 +714,7 @@ async def async_llm_complete_json(
             agent_name=agent_name,
             pass_number=pass_number,
             validator=validator,
+            tool_policy=tool_policy,
         )
     finally:
         await client.disconnect()

@@ -174,6 +174,7 @@ Potential duplicate pairs:
                     temperature=0.2,
                     agent_name="librarian",
                     validator=lambda output, pair_count=len(chunk): validate_librarian_output(output, pair_count),
+                    tool_policy="no_tools",
                 )
                 if isinstance(result, list):
                     decisions.extend(result)

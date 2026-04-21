@@ -74,6 +74,7 @@ Deep-dive pass: {pass_number} of {self.PASSES}
                     agent_name="deep_dive",
                     pass_number=pass_number,
                     validator=validate_deep_dive_output,
+                    tool_policy="web_only",
                 )
                 pass_candidate = result if isinstance(result, dict) else {}
                 gated_output, issues = self._apply_quality_gates(

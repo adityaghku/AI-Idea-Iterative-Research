@@ -332,28 +332,36 @@ def apply_filters(
     tags: list[str],
     min_score: int,
     status: str,
-    filter_crossed: bool,
-    filter_saved: bool,
+    show_neither: bool,
+    show_saved: bool,
+    show_crossed: bool,
     sort_by: str,
     ascending: bool,
 ) -> pd.DataFrame:
     """Apply filtering and sorting to ideas dataframe.
 
-    filter_crossed: False = hide crossed-out ideas; True = show only crossed-out ideas.
-    filter_saved: True = include saved ideas (default); False = exclude saved ideas.
+    show_neither: include ideas that are neither saved nor crossed out.
+    show_saved: include ideas that are saved.
+    show_crossed: include ideas that are crossed out.
+    Any combination is valid; an idea matches if any of its applicable flags are selected.
     """
     if df.empty:
         return df
 
     filtered = df.copy()
 
-    if not filter_crossed:
-        filtered = filtered[filtered["is_crossed_out"] != True]
-    else:
-        filtered = filtered[filtered["is_crossed_out"] == True]
+    is_crossed = filtered["is_crossed_out"].astype(bool)
+    is_saved = filtered["is_saved"].astype(bool)
+    neither_mask = ~is_crossed & ~is_saved
 
-    if not filter_saved:
-        filtered = filtered[filtered["is_saved"] != True]
+    include = pd.Series(False, index=filtered.index)
+    if show_neither:
+        include = include | neither_mask
+    if show_saved:
+        include = include | is_saved
+    if show_crossed:
+        include = include | is_crossed
+    filtered = filtered[include]
 
     if tags:
         mask = filtered["tags"].apply(lambda x: any(t in x for t in tags) if isinstance(x, list) else False)
@@ -550,24 +558,23 @@ def update_idea_flag(idea_id: int, field: str, value: bool) -> None:
 
 
 def submit_crossout_feedback(idea_id: int, reason_code: str, reason_text: str | None) -> bool:
-    """Cross out an idea and persist explicit negative-feedback rationale."""
+    """Cross out an idea and optionally persist explicit negative-feedback rationale."""
     reason_code = reason_code.strip()
-    if not reason_code:
-        return False
     with _SyncSession() as session:
         idea = session.get(Idea, idea_id)
         if not idea:
             return False
         idea.is_crossed_out = True
-        session.add(
-            FeedbackEvent(
-                idea_id=idea_id,
-                event_type="crossed_out",
-                reason_code=reason_code,
-                reason_text=(reason_text or "").strip() or None,
-                learning_weight=1.0,
+        if reason_code:
+            session.add(
+                FeedbackEvent(
+                    idea_id=idea_id,
+                    event_type="crossed_out",
+                    reason_code=reason_code,
+                    reason_text=(reason_text or "").strip() or None,
+                    learning_weight=1.0,
+                )
             )
-        )
         session.commit()
     return True
 
@@ -594,44 +601,55 @@ def main():
             with st.sidebar:
                 st.header("Filters")
 
-                st.caption(
-                    "✕ Crossed: off hides crossed-out ideas; on lists only crossed-out. "
-                    "🚩 Saved: on (default) includes saved ideas; off excludes them."
-                )
-                fc1, fc2 = st.columns(2)
-                with fc1:
-                    filter_crossed = st.checkbox("✕ Crossed only", value=False)
-                with fc2:
-                    filter_saved = st.checkbox("🚩 Include saved", value=True)
-                
+                st.subheader("Show ideas")
+                show_neither = st.checkbox("Neither", value=True, key="filter_neither",
+                                           help="Ideas that are not saved and not crossed out")
+                show_saved = st.checkbox("Saved", value=False, key="filter_saved",
+                                         help="Ideas you have flagged with 🚩")
+                show_crossed = st.checkbox("Crossed out", value=False, key="filter_crossed",
+                                           help="Ideas you have crossed out with ✕")
+
                 all_tags = get_all_tags(ideas_df)
                 selected_tags = st.multiselect("Filter by Tags", all_tags, default=[])
-                
+
                 min_score = st.slider("Min Score", 0, 100, 0)
-                
+
                 status_options = ["All"] + sorted(ideas_df["status"].dropna().unique().tolist())
                 selected_status = st.selectbox("Status", status_options)
-                
+
                 st.header("Sort")
                 sort_options = ["id", "score", "complexity", "created_at"]
                 sort_by = st.selectbox("Sort by", sort_options)
                 ascending = st.checkbox("Ascending", value=False)
-            
+
             filtered_df = apply_filters(
                 ideas_df,
                 selected_tags,
                 min_score,
                 selected_status,
-                filter_crossed,
-                filter_saved,
+                show_neither,
+                show_saved,
+                show_crossed,
                 sort_by,
                 ascending,
             )
-            
-            st.write(f"Showing {len(filtered_df)} of {len(ideas_df)} ideas")
-            st.caption("Detail view only. Expand an idea to inspect full analysis.")
 
-            for _, row in filtered_df.iterrows():
+            # Reset page when filters change
+            _filter_key = f"{show_neither}_{show_saved}_{show_crossed}_{selected_tags}_{min_score}_{selected_status}_{sort_by}_{ascending}"
+            if st.session_state.get("_filter_key") != _filter_key:
+                st.session_state["_filter_key"] = _filter_key
+                st.session_state["page"] = 0
+
+            _PAGE_SIZE = 10
+            _total = len(filtered_df)
+            _total_pages = max(1, (_total + _PAGE_SIZE - 1) // _PAGE_SIZE)
+            _page = min(st.session_state.get("page", 0), _total_pages - 1)
+            _page_df = filtered_df.iloc[_page * _PAGE_SIZE: (_page + 1) * _PAGE_SIZE]
+
+            st.write(f"Showing {len(_page_df)} of {_total} ideas (page {_page + 1}/{_total_pages})")
+            st.caption("Expand an idea to inspect full analysis.")
+
+            for _, row in _page_df.iterrows():
                 score_text = f"{row['score']}/100" if pd.notna(row.get("score")) else "N/A"
                 tags = row["tags"] if isinstance(row.get("tags"), list) else []
                 tags_text = ", ".join(tags) if tags else "No tags"
@@ -671,16 +689,14 @@ def main():
                                 "✕",
                                 key=f"cross_{iid}",
                                 use_container_width=True,
-                                help="Cross out and submit feedback",
+                                help="Cross out idea (reason optional)",
                                 type="secondary",
                             ):
-                                if submit_crossout_feedback(iid, reason_value, reason_text):
-                                    get_ideas_data.clear()
-                                    get_feedback_data.clear()
-                                    get_latest_portfolio_memory.clear()
-                                    st.rerun()
-                                else:
-                                    st.warning("Select a cross-out reason first.", icon="⚠️")
+                                submit_crossout_feedback(iid, reason_value, reason_text)
+                                get_ideas_data.clear()
+                                get_feedback_data.clear()
+                                get_latest_portfolio_memory.clear()
+                                st.rerun()
                         else:
                             if st.button(
                                 "Undo ✕",
@@ -703,7 +719,24 @@ def main():
                             update_idea_flag(iid, "is_saved", not is_sd)
                             get_ideas_data.clear()
                             st.rerun()
-    
+
+            # Pagination controls
+            st.divider()
+            _pc1, _pc2, _pc3 = st.columns([1, 2, 1])
+            with _pc1:
+                if st.button("← Prev", disabled=_page == 0, use_container_width=True):
+                    st.session_state["page"] = _page - 1
+                    st.rerun()
+            with _pc2:
+                st.markdown(
+                    f"<div style='text-align:center;padding-top:6px'>Page {_page + 1} of {_total_pages}</div>",
+                    unsafe_allow_html=True,
+                )
+            with _pc3:
+                if st.button("Next →", disabled=_page >= _total_pages - 1, use_container_width=True):
+                    st.session_state["page"] = _page + 1
+                    st.rerun()
+
     with tab2:
         st.subheader("Signals")
         

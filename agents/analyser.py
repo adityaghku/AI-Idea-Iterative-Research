@@ -62,6 +62,7 @@ Idea:
                 temperature=0.2,
                 agent_name="analyser",
                 validator=validate_analyser_output,
+                tool_policy="no_tools",
             )
 
             analysis_data = result if isinstance(result, dict) else {}

@@ -14,6 +14,7 @@ Role: extract novel end-user app pain signals from current web content.
 
 ## Selection Heuristics
 
+- Use the `websearch` tool to discover candidate sources and the `webfetch` tool to inspect promising pages in more detail before extracting signals.
 - Prefer recent primary-user complaints, reviews, threads, and comments over marketing pages.
 - Prefer end-user problems for mobile, watchOS, or desktop apps; avoid developer tooling problems.
 - Prefer signals with a clear trigger, failed workaround, visible urgency, and visible time or money pain.

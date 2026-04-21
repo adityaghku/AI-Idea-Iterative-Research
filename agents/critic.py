@@ -55,6 +55,7 @@ Idea:
                 temperature=0.25,
                 agent_name="critic",
                 validator=validate_critic_output,
+                tool_policy="no_tools",
             )
 
             critique_data = result if isinstance(result, dict) else {}

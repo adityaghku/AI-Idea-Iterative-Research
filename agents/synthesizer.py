@@ -51,6 +51,7 @@ Signals:
             temperature=0.35,
             agent_name="synthesizer",
             validator=lambda output: validate_synthesizer_output(output, len(signals)),
+            tool_policy="no_tools",
         )
 
         ideas_data = result if isinstance(result, list) else result.get("ideas", [])

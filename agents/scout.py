@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections import Counter
 import hashlib
 import re
+from collections import Counter
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -150,6 +150,7 @@ class ScoutAgent:
                 temperature=0.5,
                 agent_name="scout",
                 validator=validate_scout_output,
+                tool_policy="web_only",
             )
         except LLMError as e:
             logger.warning(
@@ -163,6 +164,7 @@ class ScoutAgent:
                     temperature=0.4,
                     agent_name="scout",
                     validator=validate_scout_output,
+                    tool_policy="web_only",
                 )
             except LLMError as retry_error:
                 logger.error(

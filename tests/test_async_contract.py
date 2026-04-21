@@ -8,7 +8,11 @@ def test_llm_client_has_no_asyncio_run_wrappers():
 
 
 def test_llm_response_guard_detects_non_json_prefix_and_plan_mode():
-    from utils.llm_client import _looks_like_plan_mode, _response_starts_with_json
+    from utils.llm_client import (
+        _looks_like_forbidden_worker_behavior,
+        _looks_like_plan_mode,
+        _response_starts_with_json,
+    )
 
     assert _response_starts_with_json('{"ok": true}')
     assert _response_starts_with_json("\n  [1, 2, 3]")
@@ -17,6 +21,24 @@ def test_llm_response_guard_detects_non_json_prefix_and_plan_mode():
     assert _looks_like_plan_mode("Let me think this through first.")
     assert _looks_like_plan_mode("Here's a quick plan:\n1. Analyze\n2. Execute")
     assert not _looks_like_plan_mode('{"score": 72, "comments": "Looks feasible"}')
+    assert _looks_like_forbidden_worker_behavior(
+        "Some of what we're working on might be easier to explain if I can show it to you in a web browser."
+    )
+    assert _looks_like_forbidden_worker_behavior(
+        "I'll inspect the codebase and read a few files before answering."
+    )
+    assert not _looks_like_forbidden_worker_behavior('{"score": 72, "comments": "Looks feasible"}')
+
+
+def test_worker_contract_applies_tool_policy():
+    from utils.llm_client import _build_worker_contract
+
+    web_only = _build_worker_contract("web_only")
+    no_tools = _build_worker_contract("no_tools")
+
+    assert "use only the `websearch` and `webfetch` tools" in web_only
+    assert "Do not read local files" in web_only
+    assert "Do not use any tools." in no_tools
 
 
 def test_librarian_validator_requires_one_decision_per_pair():
